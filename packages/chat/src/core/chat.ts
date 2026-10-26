@@ -487,6 +487,9 @@ const getFrameIdentity = (event: ChatEvent): FrameIdentity => {
   }
 };
 
+/** The longest delay `setTimeout` honors; a longer one fires at once. */
+const MAX_TIMER_DELAY = 2_147_483_647;
+
 /** A pause past its expiry, whose resume the server refuses. */
 const isExpired = (action: Agents.PendingAction): boolean =>
   action.expiresAt != null && action.expiresAt <= Date.now();
@@ -789,7 +792,9 @@ export class Chat {
   private readonly listeners = new Set<() => void>();
   private releaseState?: () => void;
   private active?: ActiveRequest;
-  private action?: Agents.PendingAction;
+  private held?: Agents.PendingAction;
+  /** Fires at the held pause's expiry, so no later frame is needed to retire it. */
+  private expiry?: ReturnType<typeof setTimeout>;
   private generationCreatedAt?: number;
   /** The pause whose resume request is in flight, so a second submit cannot send it again. */
   private resuming?: string;
@@ -831,6 +836,45 @@ export class Chat {
   /** The conversation this chat runs under: its id, or the one the server created under `new`. */
   get conversationId(): string {
     return this.conversation;
+  }
+
+  /** The pause the running generation waits on; holding one arms its retirement at expiry. */
+  private get action(): Agents.PendingAction | undefined {
+    return this.held;
+  }
+
+  private set action(action: Agents.PendingAction | undefined) {
+    if (action === this.held) {
+      return;
+    }
+    clearTimeout(this.expiry);
+    this.expiry = undefined;
+    this.held = action;
+    if (action?.expiresAt != null && !this.disposed) {
+      this.armExpiry(action);
+    }
+  }
+
+  /** Retires `action` once its expiry passes, unless an answer to it is in flight and decides. */
+  private armExpiry(action: Agents.PendingAction): void {
+    const remaining = (action.expiresAt ?? 0) - Date.now();
+    this.expiry = setTimeout(
+      () => {
+        this.expiry = undefined;
+        if (this.held !== action || this.disposed) {
+          return;
+        }
+        if (!isExpired(action)) {
+          /** A deadline past the longest delay a timer takes is reached in steps. */
+          this.armExpiry(action);
+          return;
+        }
+        if (this.resuming !== action.actionId) {
+          this.clearAction();
+        }
+      },
+      Math.min(Math.max(remaining, 0), MAX_TIMER_DELAY),
+    );
   }
 
   get status(): ChatStatus {
@@ -1663,6 +1707,8 @@ export class Chat {
       return;
     }
     this.disposed = true;
+    clearTimeout(this.expiry);
+    this.expiry = undefined;
     this.lifetime.abort(new Error('The chat was disposed'));
     const active = this.active;
     this.active = undefined;
@@ -1702,6 +1748,10 @@ export class Chat {
     }
     if (this.active) {
       throw new Error('A turn is already in flight for this chat');
+    }
+    if (this.action && isExpired(this.action) && this.resuming !== this.action.actionId) {
+      /** An expired pause whose answer failed blocks nothing: the server refuses its resume. */
+      this.clearAction();
     }
     if (this.action) {
       throw new Error('A paused generation is waiting for a decision; answer or stop it first');
@@ -1984,9 +2034,18 @@ export class Chat {
     const stale =
       event.type === 'pending_action' &&
       (isExpired(event.data) || this.resumed.has(event.data.actionId) || older);
-    if (!stale) {
+    const folded = stale ? undefined : this.withoutStalePause(event);
+    const disconnect =
+      event.type === 'error' &&
+      (event.status === 0 || (active.attached === true && isAttachFailure(event)));
+    /**
+     * The pause is reconciled before the host reducer folds the event in, so a subscriber its
+     * writes notify never answers a pause the same event ended or replaced.
+     */
+    this.reconcilePause(event, older, disconnect);
+    if (folded && !this.disposed) {
       const applyEvent = this.init.applyEvent ?? defaultApplyEvent;
-      applyEvent(this.withoutStalePause(event), {
+      applyEvent(folded, {
         messages: this.messages,
         write: (messages) => this.write(messages),
       });
@@ -2004,9 +2063,30 @@ export class Chat {
       if (this.disposed) {
         return undefined;
       }
-      if (event.type === 'sync' && event.data.resumeState) {
-        this.reconcileSnapshotPause(event.data.resumeState.pendingAction);
+    } else if (event.type === 'pending_action' && !stale) {
+      /** A live pause is the generation running, however its first frame arrives. */
+      this.markStreaming();
+      this.notify();
+      /** A listener told of that status may have disposed the chat too. */
+      if (this.disposed) {
+        return undefined;
       }
+    } else if (event.type === 'final') {
+      outcome = getFinalOutcome(event.data);
+    } else if (event.type === 'abort') {
+      outcome = { kind: 'abort' };
+    } else if (event.type === 'error') {
+      const message = getErrorMessage(event.data) ?? 'The response failed';
+      outcome = { kind: 'error', error: new Error(message), disconnect };
+    }
+    this.callHost(this.init.onEvent, event);
+    return outcome;
+  }
+
+  /** What one event changes in the pause the chat holds and the decisions made for it. */
+  private reconcilePause(event: ChatEvent, older: boolean, disconnect: boolean): void {
+    if (event.type === 'sync' && event.data.resumeState) {
+      this.reconcileSnapshotPause(event.data.resumeState.pendingAction);
     } else if (event.type === 'pending_action' && isExpired(event.data)) {
       this.retireExpiredPause(event.data);
     } else if (
@@ -2015,8 +2095,6 @@ export class Chat {
       !older
     ) {
       /** A pause this chat already resumed is stale when a reattached stream replays it. */
-      /** A live pause is the generation running, however its first frame arrives. */
-      this.markStreaming();
       if (
         this.action?.actionId !== event.data.actionId &&
         this.releasedPause !== event.data.actionId
@@ -2027,26 +2105,13 @@ export class Chat {
       this.releasedPause = undefined;
       this.seePause(event.data, this.generationCreatedAt);
       this.action = event.data;
-      this.notify();
     } else if (event.type === 'final') {
       this.action = undefined;
-      outcome = getFinalOutcome(event.data);
-    } else if (event.type === 'abort') {
+    } else if (event.type === 'abort' || (event.type === 'error' && !disconnect)) {
+      /** A dropped connection leaves the server's generation, and its pause, as it was. */
       this.action = undefined;
       this.decisions.clear();
-      outcome = { kind: 'abort' };
-    } else if (event.type === 'error') {
-      const disconnect = event.status === 0 || (active.attached === true && isAttachFailure(event));
-      if (!disconnect) {
-        /** A dropped connection leaves the server's generation, and its pause, as it was. */
-        this.action = undefined;
-        this.decisions.clear();
-      }
-      const message = getErrorMessage(event.data) ?? 'The response failed';
-      outcome = { kind: 'error', error: new Error(message), disconnect };
     }
-    this.callHost(this.init.onEvent, event);
-    return outcome;
   }
 
   /**
@@ -2382,10 +2447,8 @@ export class Chat {
     if (!resume) {
       throw new Error('The transport cannot resume a paused generation');
     }
+    /** Unknown on a stream that names no generation; the server then fences by the action alone. */
     const generationCreatedAt = this.generationCreatedAt;
-    if (generationCreatedAt == null) {
-      throw new Error('The paused generation is unknown');
-    }
     if (this.disposed) {
       throw new Error('The chat was disposed');
     }
@@ -2407,7 +2470,7 @@ export class Chat {
           ...resolution,
           conversationId:
             action.conversationId ?? this.pausedConversationId() ?? this.conversationId,
-          generationCreatedAt,
+          ...(generationCreatedAt != null && { generationCreatedAt }),
           actionId: action.actionId,
         }),
         this.lifetime.signal,
@@ -2505,6 +2568,10 @@ export class Chat {
     } finally {
       if (this.resuming === action.actionId) {
         this.resuming = undefined;
+        if (this.action === action && isExpired(action)) {
+          /** Its expiry passed while the answer was in flight, which then left it unresolved. */
+          this.clearAction();
+        }
       }
     }
   }

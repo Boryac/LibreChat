@@ -2636,6 +2636,102 @@ describe('Chat', () => {
       expect(chat.pendingAction).toBeUndefined();
     });
 
+    it('retires a restored pause when its expiry passes without another frame', async () => {
+      const { chat, transport } = setup();
+      const listener = jest.fn();
+      chat.subscribe(listener);
+      chat.restorePendingAction({ ...askAction, expiresAt: Date.now() + 30 }, 500);
+      expect(chat.pendingAction).toBeDefined();
+      listener.mockClear();
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      expect(chat.pendingAction).toBeUndefined();
+      expect(listener).toHaveBeenCalled();
+      const next = chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] });
+      await flush();
+      expect(transport.sendMessages).toHaveBeenCalledTimes(1);
+      chat.dispose();
+      await next;
+    });
+
+    it('retires a streamed pause when its expiry passes while the stream stays quiet', async () => {
+      const { chat, stream, sent } = await pause({ ...askAction, expiresAt: Date.now() + 30 });
+      expect(chat.pendingAction?.actionId).toBe(askAction.actionId);
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      expect(chat.pendingAction).toBeUndefined();
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('leaves an expiring pause to the answer in flight, and drops it when that answer fails', async () => {
+      let refuse: (error: Error) => void = () => undefined;
+      const resume = jest.fn(
+        () =>
+          new Promise<never>((_, reject) => {
+            refuse = reject;
+          }),
+      );
+      const { chat } = setup({}, { resume });
+      chat.restorePendingAction({ ...askAction, expiresAt: Date.now() + 30 }, 500);
+
+      const answered = chat.addToolOutput({ toolCallId: 'ask-1', output: 'x' });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(chat.pendingAction?.actionId).toBe(askAction.actionId);
+
+      refuse(new Error('The pause expired'));
+      await expect(answered).rejects.toThrow('The pause expired');
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('stops the expiry of a pause the chat no longer holds or that was disposed', async () => {
+      const { chat } = setup();
+      const listener = jest.fn();
+      chat.subscribe(listener);
+      chat.restorePendingAction({ ...askAction, expiresAt: Date.now() + 30 }, 500);
+      chat.dispose();
+      listener.mockClear();
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('reconciles the pause before a host reducer write notifies subscribers', async () => {
+      const seen: { event: string; actionId?: string }[] = [];
+      let folding: string | undefined;
+      const { chat, stream, sent } = await pause(askAction, {
+        applyEvent: (event, context) => {
+          folding = event.type;
+          context.write([...context.messages]);
+          folding = undefined;
+        },
+      });
+      chat.subscribe(() => {
+        if (folding) {
+          seen.push({ event: folding, actionId: chat.pendingAction?.actionId });
+        }
+      });
+
+      stream.push({
+        type: 'sync',
+        data: { sync: true, conversationId: 'convo-1', resumeState: { runSteps: [] } },
+      } as ChatEvent);
+      await flush();
+      stream.push({ type: 'pending_action', data: approvalAction });
+      await flush();
+      stream.push(finalEvent());
+      await sent;
+
+      expect(seen).toEqual([
+        { event: 'sync', actionId: undefined },
+        { event: 'pending_action', actionId: approvalAction.actionId },
+        { event: 'final', actionId: undefined },
+      ]);
+    });
+
     it('drops an expired pause a stream replays, and the one it held under that id', async () => {
       const { chat, stream, sent } = await pause(askAction);
       expect(chat.pendingAction).toBe(askAction);
@@ -2865,10 +2961,13 @@ describe('Chat', () => {
       await flush();
       second.push({ type: 'pending_action', data: askAction });
       await flush();
-      await expect(chat.addToolOutput({ toolCallId: 'ask-1', output: 'x' })).rejects.toThrow(
-        'paused generation is unknown',
-      );
-      expect(transport.resume).not.toHaveBeenCalled();
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: 'x' });
+      /** The second stream names no generation, so the answer is fenced by its action alone. */
+      expect(transport.resume).toHaveBeenCalledTimes(1);
+      const [request] = (transport.resume as jest.Mock).mock.calls[0];
+      expect(request).toMatchObject({ actionId: askAction.actionId, answer: 'x' });
+      expect(request).not.toHaveProperty('generationCreatedAt');
+      expect(chat.pendingAction).toBeUndefined();
       second.push(finalEvent());
       await secondTurn;
     });
