@@ -1213,12 +1213,17 @@ export class Chat {
     generation: Generation,
     result: ChatAbortResult,
   ): Promise<ChatStopResult> {
-    if (active.generation !== generation) {
+    const owns = () => active.generation === generation;
+    if (!owns()) {
       /** The request moved on to another generation while the stop was in flight; that one runs on. */
       return getStopResult(result, generation.stoppedConversationId);
     }
     if (result && 'runMessages' in result) {
-      await this.mergeRunMessages(result.runMessages, () => this.active === active);
+      await this.mergeRunMessages(result.runMessages, () => this.active === active && owns());
+      if (!owns()) {
+        /** The reattachment opened another generation while the merge waited its turn. */
+        return getStopResult(result, generation.stoppedConversationId);
+      }
       active.controller.abort();
       active.stream?.close();
     } else if (result === null || result === goneStop || generation.settledAs) {

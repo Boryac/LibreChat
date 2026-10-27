@@ -2809,4 +2809,56 @@ describe('Chat disposed while a confirmed stop ends its request', () => {
       expect(h.chat.messages).toBe(messages);
     },
   );
+
+  /**
+   * The reconnect opens a newer generation up to four microtasks after the answer, while the merge
+   * of its run messages waits its turn; later than that, the stop has already ended the request.
+   */
+  it.each([0, 1, 2, 3, 4])(
+    '(1) a stop answer with run messages leaves a generation its reattachment opened %i microtasks later running',
+    async (ticks) => {
+      const h = createHarness();
+      await states.detached(h);
+      let answerStop: (() => void) | undefined;
+      h.transport.abort.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answerStop = () =>
+              resolve({
+                final: true,
+                conversation: {},
+                runMessages: [userMessage],
+              } as unknown as ChatAbortResult);
+          }),
+      );
+      const other = createStream({ streamId: 'convo-1', generationCreatedAt: 300 });
+      let openOther: (() => void) | undefined;
+      h.transport.reconnectToStream.mockImplementation(
+        () => new Promise((resolve) => (openOther = () => resolve(other))),
+      );
+      h.chat.resumeStream({ streamId: 'convo-1' }).then(
+        () => undefined,
+        () => undefined,
+      );
+      await flush();
+      h.chat.stop().then(
+        () => undefined,
+        () => undefined,
+      );
+      await flush();
+
+      answerStop?.();
+      for (let i = 0; i < ticks; i++) {
+        await Promise.resolve();
+      }
+      openOther?.();
+      await flush();
+      other.push(stepEvent);
+      await flush();
+
+      expect(other.closed()).toBe(false);
+      expect(h.chat.status).toBe('streaming');
+      expect(h.chat.connection).toBe('live');
+    },
+  );
 });
