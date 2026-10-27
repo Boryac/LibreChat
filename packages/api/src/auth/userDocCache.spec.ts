@@ -427,6 +427,32 @@ describe('auth user document cache helpers', () => {
       ).resolves.toBeUndefined();
     });
 
+    it('does not serve a document that expired while its fence read stalled', async () => {
+      const store = makeStore();
+      const userId = new Types.ObjectId();
+      const lookupStartedAt = now;
+      await setCachedAuthUserDoc(
+        store,
+        'auth-user-doc:v2:unindexed',
+        { _id: userId, email: 'before@example.com' },
+        lookupStartedAt,
+      );
+      const fenceKey = buildAuthUserDocEvictionFenceKey(userId.toString());
+      const get = store.get;
+      /** The fence GET returns only after the fence and the document have both expired. */
+      store.get = async <T = unknown>(key: string) => {
+        if (key === fenceKey) {
+          now = lookupStartedAt + AUTH_USER_DOC_CACHE_TTL_MS * 3 + 1;
+          return undefined as T | undefined;
+        }
+        return get<T>(key);
+      };
+
+      await expect(
+        getCachedAuthUserDoc(store, 'auth-user-doc:v2:unindexed'),
+      ).resolves.toBeUndefined();
+    });
+
     it('does not write a document whose lookup is two TTLs old once the index write returns', async () => {
       const store = makeStore();
       const userId = new Types.ObjectId();

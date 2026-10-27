@@ -160,7 +160,8 @@ export async function getCachedAuthUserDoc(
     if (!cached || cached.version !== AUTH_USER_DOC_CACHE_VERSION || !cached.user) {
       return undefined;
     }
-    if (typeof cached.expiresAt !== 'number' || Date.now() > cached.expiresAt) {
+    const isExpired = () => typeof cached.expiresAt !== 'number' || Date.now() > cached.expiresAt;
+    if (isExpired()) {
       return undefined;
     }
     /** A recent eviction means this document may predate the change it evicted. */
@@ -168,7 +169,8 @@ export async function getCachedAuthUserDoc(
     if (!userId || (await isAuthUserDocEvictionFenced(store, userId))) {
       return undefined;
     }
-    return cached.user;
+    /** The fence read can stall past both the fence and this document's expiry. */
+    return isExpired() ? undefined : cached.user;
   } catch (error) {
     logger.warn('[authUserDocCache] Cache read failed; falling back to user lookup', {
       error: error instanceof Error ? error.message : String(error),
