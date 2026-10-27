@@ -2731,3 +2731,82 @@ describe('Chat lost starts and conflict probes', () => {
     expect(h.finishes[0]).toMatchObject({ isSettled: true });
   });
 });
+
+describe('Chat disposed while a confirmed stop ends its request', () => {
+  it.each([0, 1, 2, 3, 4, 6, 8, 12])(
+    '(3) a chat disposed %i microtasks into the answer to a stop of a failed reattachment writes no state',
+    async (ticks) => {
+      const h = createHarness();
+      await states.reattaching(h);
+      let answerStop: (() => void) | undefined;
+      h.transport.abort.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answerStop = () =>
+              resolve({
+                final: true,
+                conversation: {},
+                runMessages: [userMessage],
+              } as unknown as ChatAbortResult);
+          }),
+      );
+      h.chat.stop().then(
+        () => undefined,
+        () => undefined,
+      );
+      await flush();
+      h.fail?.();
+      await flush();
+      expect(h.chat.status).toBe('error');
+
+      answerStop?.();
+      for (let i = 0; i < ticks; i++) {
+        await Promise.resolve();
+      }
+      const { status, error } = h.chat;
+      h.chat.dispose();
+      await flush();
+
+      expect(h.chat.status).toBe(status);
+      expect(h.chat.error).toBe(error);
+    },
+  );
+
+  it.each([0, 1, 2, 3, 4, 6, 8, 12])(
+    '(3) a chat disposed %i microtasks into the Assistants answer to a stop of a dropped generation writes no state',
+    async (ticks) => {
+      const h = createHarness();
+      await states.detached(h);
+      expect(h.chat.status).toBe('error');
+      let answerStop: (() => void) | undefined;
+      h.transport.abort.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answerStop = () =>
+              resolve({
+                final: true,
+                conversation: {},
+                runMessages: [userMessage],
+              } as unknown as ChatAbortResult);
+          }),
+      );
+      h.chat.stop().then(
+        () => undefined,
+        () => undefined,
+      );
+      await flush();
+
+      answerStop?.();
+      for (let i = 0; i < ticks; i++) {
+        await Promise.resolve();
+      }
+      const { status, error, messages } = h.chat;
+      h.chat.dispose();
+      await flush();
+
+      expect(h.chat.status).toBe(status);
+      expect(h.chat.error).toBe(error);
+      expect(h.chat.messages).toBe(messages);
+    },
+  );
+});

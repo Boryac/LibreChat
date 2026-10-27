@@ -1236,6 +1236,10 @@ export class Chat {
       active.controller.abort();
     }
     await active.finished;
+    if (this.disposed) {
+      /** A chat disposed while the stop ended its request writes no state. */
+      return getStopResult(result, generation.stoppedConversationId);
+    }
     /** The server confirmed the stop, so this generation is over however its stream ended. */
     if (active.disconnected && this.error === active.disconnected) {
       this.init.state.error = undefined;
@@ -1406,8 +1410,8 @@ export class Chat {
       return this.endStopped(active, generation, result);
     }
     /** The dropped generation owns the chat only while no newer request does, such as a retry. */
-    const owns = () => this.detached === detached && !this.active;
-    if (this.disposed || !owns()) {
+    const owns = () => !this.disposed && this.detached === detached && !this.active;
+    if (!owns()) {
       return getStopResult(result, generation.stoppedConversationId);
     }
     if (result && 'runMessages' in result) {
