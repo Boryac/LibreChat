@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { logger, evictAuthUserDocs, isAuthUserDocEvictionFenced } from '@librechat/data-schemas';
 import {
   CacheKeys,
+  AUTH_USER_DOC_MAX_AGE_MS,
   AUTH_USER_DOC_BY_ID_PREFIX,
   AUTH_USER_DOC_CACHE_TTL_MS,
 } from 'librechat-data-provider';
@@ -35,9 +36,6 @@ interface CachedAuthUserDoc {
   expiresAt: number;
   user: CachedAuthUser;
 }
-
-/** How long after its lookup began a document may still be served; the eviction fence outlasts it. */
-const AUTH_USER_DOC_MAX_AGE_MS = AUTH_USER_DOC_CACHE_TTL_MS * 2;
 
 type CachedAuthUser = Omit<Partial<IUser>, '_id'> & {
   _id?: string;

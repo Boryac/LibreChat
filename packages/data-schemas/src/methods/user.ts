@@ -1,5 +1,5 @@
 import mongoose, { FilterQuery } from 'mongoose';
-import { AUTH_USER_DOC_CACHE_TTL_MS } from 'librechat-data-provider';
+import { AUTH_USER_DOC_MAX_AGE_MS } from 'librechat-data-provider';
 import type {
   BalanceRefillMode,
   RefillIntervalUnit,
@@ -41,7 +41,7 @@ interface UserMethodDeps {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
+/** Timers can fire a millisecond early, so the wait outlasts a cached document by this much. */
 const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
 
 /** Cached auth documents evicted at once when a reset touches every user. */
@@ -439,7 +439,8 @@ export function createUserMethods(
    * The barrier a credential change passes before it is confirmed. A cached document without
    * the new credentialsChangedAt keeps pre-change access tokens verifying until it expires, so
    * eviction is retried and, when it still cannot remove every document, this resolves only
-   * after the cache TTL. Callers revoke sessions and passkeys first: during the wait those
+   * after the longest a cached document can live, which a lookup that began just before the
+   * change may stretch to two cache TTLs. Callers revoke sessions and passkeys first: during the wait those
    * could otherwise mint access tokens issued after the stamp.
    */
   async function awaitAuthUserDocEviction(userId: string): Promise<void> {
@@ -448,9 +449,9 @@ export function createUserMethods(
     }
     logger.warn(
       '[awaitAuthUserDocEviction] Cached auth documents were not evicted after a credential change; waiting for them to expire',
-      { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
+      { userId, waitMs: AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
     );
-    await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+    await (deps.delay ?? wait)(AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
   }
 
   /** Only the request that atomically consumes an unused recovery code may authenticate. */
@@ -566,10 +567,10 @@ export function createUserMethods(
       logger.warn(
         '[resetTermsAcceptance] Cached auth documents were not evicted; waiting for them to expire',
         {
-          waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
+          waitMs: AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
         },
       );
-      await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+      await (deps.delay ?? wait)(AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
     }
     return { modifiedCount: result.modifiedCount };
   }

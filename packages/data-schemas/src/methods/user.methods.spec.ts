@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   CacheKeys,
   AUTH_USER_DOC_BY_ID_PREFIX,
-  AUTH_USER_DOC_CACHE_TTL_MS,
+  AUTH_USER_DOC_MAX_AGE_MS,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
@@ -717,7 +717,7 @@ describe('User Methods - Database Tests', () => {
         await methodsWithCache.awaitAuthUserDocEviction(userId);
 
         expect(delay).toHaveBeenCalledTimes(1);
-        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_CACHE_TTL_MS);
+        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_MAX_AGE_MS);
         expect(cache.delete).not.toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
         if (!failing.indexRead) {
           expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
@@ -1344,7 +1344,7 @@ describe('User Methods - Database Tests', () => {
 
       await cached.resetTermsAcceptance();
 
-      expect(delay).toHaveBeenCalledWith(AUTH_USER_DOC_CACHE_TTL_MS + 100);
+      expect(delay).toHaveBeenCalledWith(AUTH_USER_DOC_MAX_AGE_MS + 100);
     });
 
     it('does not wait when the auth user cache is off', async () => {

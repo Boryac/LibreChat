@@ -9,6 +9,7 @@ import {
   CacheKeys,
   AUTH_USER_DOC_BY_ID_PREFIX,
   AUTH_USER_DOC_CACHE_TTL_MS,
+  AUTH_USER_DOC_MAX_AGE_MS,
   AUTH_USER_DOC_EVICTED_PREFIX,
   AUTH_USER_DOC_EVICTION_FENCE_TTL_MS,
 } from 'librechat-data-provider';
@@ -388,7 +389,7 @@ test.describe('CLI password reset', () => {
       const cli = await runResetCli(email, cwd, env);
       expect(cli.code, cli.stderr.slice(-400)).toBe(0);
       expect(cli.stdout).toContain('Password successfully reset!');
-      expect(cli.reportDelayMs).toBeGreaterThanOrEqual(AUTH_USER_DOC_CACHE_TTL_MS);
+      expect(cli.reportDelayMs).toBeGreaterThanOrEqual(AUTH_USER_DOC_MAX_AGE_MS);
       expect(await cache.get(controlKey)).toEqual({ credentialsChangedAt: null });
       await withMongo(async (db) => {
         const resetUser = await db.collection('users').findOne({ email });
