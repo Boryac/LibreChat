@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
-import { logger } from '@librechat/data-schemas';
 import { CacheKeys } from 'librechat-data-provider';
+import { logger, buildAuthUserDocEvictionFenceKey } from '@librechat/data-schemas';
 import {
   AUTH_USER_DOC_CACHE_TTL_MS,
   buildAuthUserDocCacheKey,
@@ -152,18 +152,23 @@ describe('auth user document cache helpers', () => {
     const cacheKey = 'auth-user-doc:v2:key';
     const userId = new Types.ObjectId();
 
-    await setCachedAuthUserDoc(store, cacheKey, {
-      _id: userId,
-      id: userId.toString(),
-      email: 'user@example.com',
-      provider: 'openid',
-      password: 'secret',
-      refreshToken: [{ refreshToken: 'secret' }],
-      federatedTokens: { access_token: 'secret' },
-      openidTokens: { access_token: 'secret' },
-      totpSecret: 'secret',
-      backupCodes: [{ codeHash: 'secret', used: false }],
-    });
+    await setCachedAuthUserDoc(
+      store,
+      cacheKey,
+      {
+        _id: userId,
+        id: userId.toString(),
+        email: 'user@example.com',
+        provider: 'openid',
+        password: 'secret',
+        refreshToken: [{ refreshToken: 'secret' }],
+        federatedTokens: { access_token: 'secret' },
+        openidTokens: { access_token: 'secret' },
+        totpSecret: 'secret',
+        backupCodes: [{ codeHash: 'secret', used: false }],
+      },
+      Date.now(),
+    );
 
     const cached = store.values.get(cacheKey) as { user: Record<string, unknown> };
     expect(cached.user).toMatchObject({
@@ -205,10 +210,15 @@ describe('auth user document cache helpers', () => {
       return true;
     });
 
-    await setCachedAuthUserDoc(store, 'auth-user-doc:v2:orphan', {
-      _id: userId,
-      email: 'user@example.com',
-    });
+    await setCachedAuthUserDoc(
+      store,
+      'auth-user-doc:v2:orphan',
+      {
+        _id: userId,
+        email: 'user@example.com',
+      },
+      Date.now(),
+    );
 
     expect(store.values.has('auth-user-doc:v2:orphan')).toBe(false);
     expect(logger.warn).toHaveBeenCalledWith('[authUserDocCache] Cache write failed', {
@@ -226,14 +236,24 @@ describe('auth user document cache helpers', () => {
       Array.from({ length: 20 }, (_value, index) => `existing-key-${index}`),
     );
 
-    await setCachedAuthUserDoc(store, 'existing-key-10', {
-      _id: objectId,
-      email: 'user@example.com',
-    });
-    await setCachedAuthUserDoc(store, 'new-key', {
-      _id: objectId,
-      email: 'user@example.com',
-    });
+    await setCachedAuthUserDoc(
+      store,
+      'existing-key-10',
+      {
+        _id: objectId,
+        email: 'user@example.com',
+      },
+      Date.now(),
+    );
+    await setCachedAuthUserDoc(
+      store,
+      'new-key',
+      {
+        _id: objectId,
+        email: 'user@example.com',
+      },
+      Date.now(),
+    );
 
     const indexed = store.values.get(indexKey);
     expect(indexed).toHaveLength(20);
@@ -261,6 +281,93 @@ describe('auth user document cache helpers', () => {
     expect(store.delete).toHaveBeenCalledWith('key-a');
     expect(store.delete).toHaveBeenCalledWith('key-b');
     expect(store.delete).toHaveBeenCalledWith('key-c');
+  });
+
+  it('does not serve a document read before an eviction and written after it', async () => {
+    const store = makeStore();
+    const userId = new Types.ObjectId();
+    const lookupStartedAt = Date.now();
+
+    await invalidateCachedAuthUserDoc(store, { userId: userId.toString() });
+    await setCachedAuthUserDoc(
+      store,
+      'auth-user-doc:v2:late',
+      { _id: userId, email: 'before@example.com' },
+      lookupStartedAt,
+    );
+
+    expect(store.values.has('auth-user-doc:v2:late')).toBe(true);
+    await expect(getCachedAuthUserDoc(store, 'auth-user-doc:v2:late')).resolves.toBeUndefined();
+  });
+
+  it('hides a cached document the reverse index lost once the user is evicted', async () => {
+    const store = makeStore();
+    const userId = new Types.ObjectId();
+    const user = { _id: userId, email: 'user@example.com' };
+    await setCachedAuthUserDoc(store, 'auth-user-doc:v2:lost', user, Date.now());
+    await setCachedAuthUserDoc(store, 'auth-user-doc:v2:kept', user, Date.now());
+    /** A concurrent read-modify-write of the index dropped the first key. */
+    store.values.set(buildAuthUserDocReverseIndexKey(userId.toString()), ['auth-user-doc:v2:kept']);
+
+    await invalidateCachedAuthUserDoc(store, { userId: userId.toString() });
+
+    expect(store.values.has('auth-user-doc:v2:lost')).toBe(true);
+    expect(store.values.has('auth-user-doc:v2:kept')).toBe(false);
+    await expect(getCachedAuthUserDoc(store, 'auth-user-doc:v2:lost')).resolves.toBeUndefined();
+  });
+
+  it('serves a document again once the eviction fence expires', async () => {
+    const store = makeStore();
+    const userId = new Types.ObjectId();
+    await invalidateCachedAuthUserDoc(store, { userId: userId.toString() });
+    await setCachedAuthUserDoc(
+      store,
+      'auth-user-doc:v2:fresh',
+      { _id: userId, email: 'after@example.com' },
+      Date.now(),
+    );
+    await expect(getCachedAuthUserDoc(store, 'auth-user-doc:v2:fresh')).resolves.toBeUndefined();
+
+    store.values.delete(buildAuthUserDocEvictionFenceKey(userId.toString()));
+
+    await expect(getCachedAuthUserDoc(store, 'auth-user-doc:v2:fresh')).resolves.toMatchObject({
+      email: 'after@example.com',
+    });
+  });
+
+  it('does not cache a lookup slower than the cache TTL', async () => {
+    const store = makeStore();
+    const userId = new Types.ObjectId();
+
+    await setCachedAuthUserDoc(
+      store,
+      'auth-user-doc:v2:slow',
+      { _id: userId, email: 'user@example.com' },
+      Date.now() - AUTH_USER_DOC_CACHE_TTL_MS - 1,
+    );
+
+    expect(store.set).not.toHaveBeenCalled();
+  });
+
+  it('skips a cached document whose eviction fence cannot be read', async () => {
+    const store = makeStore();
+    const userId = new Types.ObjectId();
+    await setCachedAuthUserDoc(
+      store,
+      'auth-user-doc:v2:key',
+      { _id: userId, email: 'user@example.com' },
+      Date.now(),
+    );
+    const fenceKey = buildAuthUserDocEvictionFenceKey(userId.toString());
+    const get = store.get;
+    store.get = async <T = unknown>(key: string) => {
+      if (key === fenceKey) {
+        throw new Error('redis unavailable');
+      }
+      return get<T>(key);
+    };
+
+    await expect(getCachedAuthUserDoc(store, 'auth-user-doc:v2:key')).resolves.toBeUndefined();
   });
 
   it('logs cache failures without throwing', async () => {

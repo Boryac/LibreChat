@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { logger, evictAuthUserDocs } from '@librechat/data-schemas';
+import { logger, evictAuthUserDocs, isAuthUserDocEvictionFenced } from '@librechat/data-schemas';
 import {
   CacheKeys,
   AUTH_USER_DOC_BY_ID_PREFIX,
@@ -157,6 +157,11 @@ export async function getCachedAuthUserDoc(
     if (!cached || cached.version !== AUTH_USER_DOC_CACHE_VERSION || !cached.user) {
       return undefined;
     }
+    /** A recent eviction means this document may predate the change it evicted. */
+    const userId = getUserId(cached.user);
+    if (!userId || (await isAuthUserDocEvictionFenced(store, userId))) {
+      return undefined;
+    }
     return cached.user;
   } catch (error) {
     logger.warn('[authUserDocCache] Cache read failed; falling back to user lookup', {
@@ -168,13 +173,20 @@ export async function getCachedAuthUserDoc(
 
 /**
  * The reverse index is written first and outlives every document it names, so eviction can
- * always find a cached document: when the index write fails, the document is not cached.
+ * usually find a cached document: when the index write fails, the document is not cached.
+ * `lookupStartedAt` is when the database read of `user` began. A lookup slower than one cache
+ * TTL is not cached, so every cached document read before an eviction expires while that
+ * eviction's fence still hides it, including one the reverse index lost.
  */
 export async function setCachedAuthUserDoc(
   store: AuthUserDocCacheStore,
   cacheKey: string,
   user: Partial<IUser>,
+  lookupStartedAt: number,
 ): Promise<void> {
+  if (Date.now() - lookupStartedAt > AUTH_USER_DOC_CACHE_TTL_MS) {
+    return;
+  }
   try {
     const sanitized = sanitizeUserForCache(user);
     const userId = getUserId(sanitized);

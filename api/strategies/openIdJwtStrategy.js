@@ -186,6 +186,7 @@ const openIdJwtLogin = (openIdConfig) => {
           authUserCacheMode === 'on' &&
           cachedUser &&
           isUserInAuthCacheScope(cachedUser, authUserCacheScope);
+        const lookupStartedAt = Date.now();
         const lookupResult = servedCachedUser
           ? { user: cachedUser, error: null, migration: false }
           : await findOpenIDUser({
@@ -247,7 +248,12 @@ const openIdJwtLogin = (openIdConfig) => {
                     cacheKey: authUserCacheKey,
                   });
                 } else if (!servedCachedUser && isUserInAuthCacheScope(user, authUserCacheScope)) {
-                  await setCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, user);
+                  await setCachedAuthUserDoc(
+                    authUserCacheStore,
+                    authUserCacheKey,
+                    user,
+                    lookupStartedAt,
+                  );
                 }
               }
 

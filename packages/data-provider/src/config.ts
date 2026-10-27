@@ -5216,6 +5216,15 @@ export const AUTH_USER_DOC_BY_ID_PREFIX = 'auth-user-doc-byid';
 /** Lifetime of a cached auth user document, and so the longest a stale one can be served. */
 export const AUTH_USER_DOC_CACHE_TTL_MS = 5000;
 
+/** Per-user marker an eviction leaves so a lookup that began before it cannot be cached or served. */
+export const AUTH_USER_DOC_EVICTED_PREFIX = 'auth-user-doc-evicted';
+
+/**
+ * Lifetime of that marker. A document is only cached when its lookup took at most one cache TTL
+ * and then lives one more, so any document read before an eviction expires within two TTLs of it.
+ */
+export const AUTH_USER_DOC_EVICTION_FENCE_TTL_MS = AUTH_USER_DOC_CACHE_TTL_MS * 3;
+
 /**
  * Enum for violation types, used to identify, log, and cache violations.
  */

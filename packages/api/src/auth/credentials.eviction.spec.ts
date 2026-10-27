@@ -63,7 +63,7 @@ describe('credential change with a failing auth cache', () => {
     if (!cacheKey) {
       throw new Error('expected a cache key');
     }
-    await setCachedAuthUserDoc(store, cacheKey, user);
+    await setCachedAuthUserDoc(store, cacheKey, user, Date.now());
     const oldToken = { issuedAt: Math.floor(Date.now() / 1000) - 60 };
     expect(isTokenRetired(oldToken, await getCachedAuthUserDoc(store, cacheKey))).toBe(false);
 
