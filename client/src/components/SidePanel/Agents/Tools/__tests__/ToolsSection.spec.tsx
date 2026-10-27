@@ -243,6 +243,7 @@ describe('ToolsSection', () => {
     ['sys__server__sys_mcp_shared', '0'],
     ['sys__all__sys_mcp_shared', '2'],
     ['shared', '0'],
+    ['mcp_shared', '0'],
   ])('shows an attached consume-only server referenced by %s', (token, count) => {
     mockAgentTools = [token];
     mockMcpServers.set(
