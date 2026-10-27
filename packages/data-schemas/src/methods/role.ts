@@ -652,7 +652,8 @@ export function createRoleMethods(
   ): Promise<string[]> {
     const User = mongoose.models.User as Model<IUser>;
     const members = roleMembersFilter(roleName, 'deleteRoleByName');
-    const reassigned: string[] = [];
+    /** A Set: an account re-added to the role between passes is moved again, reported once. */
+    const reassigned = new Set<string>();
     /** Every id a write targeted: a write that rejects may still have changed some of them. */
     const written: string[] = [];
     let reason: RoleDeletionFailure = 'reassignment_failed';
@@ -660,7 +661,7 @@ export function createRoleMethods(
       for (let pass = 0; ; pass++) {
         const ids = (await User.find(members).select('_id').lean()).map((u) => u._id.toString());
         if (ids.length === 0) {
-          return reassigned;
+          return [...reassigned];
         }
         if (pass === MAX_REASSIGN_PASSES) {
           throw new Error(`members still joining "${roleName}" after every pass`);
@@ -678,7 +679,7 @@ export function createRoleMethods(
         }
       }
     } catch (error) {
-      throw new RoleDeletionError(reason, reassigned, error);
+      throw new RoleDeletionError(reason, [...reassigned], error);
     } finally {
       await invalidateAuthUserDocCache(written);
     }
@@ -694,7 +695,7 @@ export function createRoleMethods(
     User: Model<IUser>,
     members: FilterQuery<IUser>,
     batch: string[],
-    reassigned: string[],
+    reassigned: Set<string>,
   ): Promise<void> {
     /** The tag is not a schema path, so every query naming it opts out of strict filtering. */
     const nonce = new mongoose.Types.ObjectId();
@@ -713,10 +714,14 @@ export function createRoleMethods(
       if (modifiedCount === 0) {
         return;
       }
-      reassigned.push(...(modifiedCount === batch.length ? batch : await readTagged()));
+      for (const id of modifiedCount === batch.length ? batch : await readTagged()) {
+        reassigned.add(id);
+      }
     } catch (error) {
       try {
-        reassigned.push(...(await readTagged()));
+        for (const id of await readTagged()) {
+          reassigned.add(id);
+        }
       } catch (recoveryError) {
         logger.error('[deleteRoleByName] reassigned members unreadable after a failed write:', {
           recoveryError,
