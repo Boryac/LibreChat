@@ -46,6 +46,7 @@ jest.mock('@librechat/api', () => ({
   getValidOpenIdReuseUserId: jest.fn(),
   invalidateCachedAuthUserDoc: jest.fn(),
   setCachedAuthUserDoc: jest.fn(),
+  timeAuthUserLookup: jest.requireActual('@librechat/api').timeAuthUserLookup,
   getHttpsProxyAgent: jest.fn(() => undefined),
   isAccessTokenJwt: jest.requireActual('@librechat/api').isAccessTokenJwt,
   math: jest.fn((val, fallback) => fallback),

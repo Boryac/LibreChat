@@ -9,6 +9,7 @@ import {
   getCachedAuthUserDoc,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
+  timeAuthUserLookup,
 } from './userDocCache';
 import { cacheConfig } from '~/cache/cacheConfig';
 
@@ -441,6 +442,19 @@ describe('auth user document cache helpers', () => {
 
       expect(store.values.has('auth-user-doc:v2:expired')).toBe(false);
     });
+  });
+
+  it('stamps a lookup with the time before it ran', async () => {
+    let ranAt = 0;
+    const before = Date.now();
+    const { result, lookupStartedAt } = await timeAuthUserLookup(async () => {
+      ranAt = Date.now();
+      return { user: 'found' };
+    });
+
+    expect(result).toEqual({ user: 'found' });
+    expect(lookupStartedAt).toBeGreaterThanOrEqual(before);
+    expect(lookupStartedAt).toBeLessThanOrEqual(ranAt);
   });
 
   it('logs cache failures without throwing', async () => {

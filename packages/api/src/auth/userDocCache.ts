@@ -180,6 +180,17 @@ export async function getCachedAuthUserDoc(
 }
 
 /**
+ * Runs the database lookup whose result a cache write may store, and stamps when it began:
+ * `setCachedAuthUserDoc` anchors the document's lifetime to that moment.
+ */
+export async function timeAuthUserLookup<T>(
+  lookup: () => Promise<T>,
+): Promise<{ result: T; lookupStartedAt: number }> {
+  const lookupStartedAt = Date.now();
+  return { result: await lookup(), lookupStartedAt };
+}
+
+/**
  * The reverse index is written first and outlives every document it names, so eviction can
  * usually find a cached document: when the index write fails, the document is not cached.
  * `lookupStartedAt` is when the database read of `user` began. A document's lifetime is anchored
