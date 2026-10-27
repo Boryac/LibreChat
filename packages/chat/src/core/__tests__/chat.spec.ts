@@ -5377,6 +5377,247 @@ describe('Chat attachments and reported conversations', () => {
 
       expect(attachedWith).toEqual(['earlier-1:Earlier', 'earlier-2:Answer', 'user-1:Edited']);
     });
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'keeps a row a store subscriber appended inside the write of a retry the server answered with the dropped generation, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        const retryUser: TMessage = { ...userMessage, messageId: 'user-2', text: 'Again' };
+        const retryResponse: TMessage = {
+          ...placeholder,
+          messageId: 'response-2',
+          parentMessageId: 'user-2',
+        };
+        state.subscribe?.(() => {
+          const current = state.messages;
+          if (
+            current.some((m) => m.messageId === retryResponse.messageId) &&
+            !current.some((m) => m.messageId === external.messageId)
+          ) {
+            state.replaceMessages([...current, external]);
+          }
+        });
+        const first = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+        const reattached = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+        let attachedWith: string[] = [];
+        const prepareRequest = jest
+          .fn()
+          .mockImplementationOnce(() => ({ payload, messages: optimistic }))
+          .mockImplementationOnce(() => ({
+            payload,
+            messages: (current: TMessage[]) => [...current, retryUser, retryResponse],
+          }));
+        const { chat, transport } = setup(
+          { state, prepareRequest },
+          {
+            sendMessages: jest.fn(async () => ({ status: 'stream' as const, stream: first })),
+            reconnectToStream: jest.fn(async () => {
+              attachedWith = rows(chat.messages);
+              return reattached;
+            }),
+          },
+        );
+        const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        await flush();
+        first.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+        await sent;
+        const before = rows(state.messages);
+
+        transport.sendMessages.mockResolvedValueOnce({ ...replaced, generationCreatedAt: 100 });
+        const retry = chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+        await flush();
+        reattached.push(finalEvent({ requestMessage: null, responseMessage: null }));
+        await retry;
+
+        expect(attachedWith).toEqual([...before, 'external-1:External']);
+      },
+    );
+
+    /** The rows an Assistants stop answer carries, which replace the list when the run ends. */
+    const stored: TMessage[] = [userMessage, { ...placeholder, text: 'Stored' }];
+    const storedAnswer = { final: true, conversation: {}, runMessages: stored };
+
+    /** Starts a turn over `state` and stops it with an Assistants answer that carries its rows. */
+    const stopWithRunMessages = async (state: ChatState) => {
+      const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      const { chat, transport } = setup(
+        { state, prepareRequest: jest.fn(() => ({ payload, messages: optimistic })) },
+        {
+          sendMessages: jest.fn(async () => ({ status: 'stream' as const, stream })),
+          abort: jest.fn(async () => {
+            stream.push(finalEvent({ terminalStatus: 'aborted' }));
+            return storedAnswer;
+          }) as unknown as ChatTransport['abort'],
+        },
+      );
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push(stepEvent);
+      await flush();
+      return { chat, transport, sent };
+    };
+
+    const isStored = (messages: TMessage[]) =>
+      messages.some((m) => m.messageId === placeholder.messageId && m.text === 'Stored');
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      "keeps a row a store subscriber appended inside a stop's run-message merge, %s",
+      async (_label, shared) => {
+        const state = createStore(shared);
+        state.subscribe?.(() => {
+          const current = state.messages;
+          if (isStored(current) && !current.some((m) => m.messageId === external.messageId)) {
+            state.replaceMessages([...current, external]);
+          }
+        });
+        const { chat, sent } = await stopWithRunMessages(state);
+
+        await expect(chat.stop()).resolves.toEqual({ status: 'stopped' });
+        await sent;
+
+        expect(rows(state.messages)).toEqual([
+          'user-1:Hi',
+          'response-1:Stored',
+          'external-1:External',
+        ]);
+      },
+    );
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      "writes nothing more once a store subscriber disposes the chat inside a stop's run-message merge, %s",
+      async (_label, shared) => {
+        const state = createStore(shared) as ReturnType<typeof createState>;
+        let atDispose: { statuses: number; connection: string; rows: string[] } | undefined;
+        const { chat, sent } = await stopWithRunMessages(state);
+        state.subscribe?.(() => {
+          if (!atDispose && isStored(state.messages)) {
+            chat.dispose();
+            atDispose = {
+              statuses: state.statuses.length,
+              connection: state.connection,
+              rows: rows(state.messages),
+            };
+          }
+        });
+
+        await chat.stop();
+        await sent;
+        await flush();
+
+        expect(atDispose).toBeDefined();
+        expect(state.statuses).toHaveLength(atDispose?.statuses ?? -1);
+        expect(state.connection).toBe(atDispose?.connection);
+        expect(rows(state.messages)).toEqual(atDispose?.rows);
+      },
+    );
+
+    const toolCall = (id: string) => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id,
+        name: 'search',
+        args: '{}',
+        type: 'tool_call',
+        approval: { actionId: 'action-1', allowed_decisions: ['approve', 'reject'] },
+      },
+    });
+    const approval = {
+      actionId: 'action-1',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      payload: {
+        type: 'tool_approval',
+        action_requests: [{ name: 'search', arguments: '{}', tool_call_id: 'call-1' }],
+        review_configs: [],
+      },
+    } as Agents.PendingAction;
+
+    /** Starts a turn over `state` whose stream pauses for approval of `call-1`. */
+    const pauseForApproval = async (state: ChatState) => {
+      const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      const paused = setup(
+        {
+          state,
+          resumeSelection: () => ({ endpoint: 'agents', agent_id: 'agent-1' }),
+          prepareRequest: jest.fn(() => ({
+            payload,
+            messages: (current: TMessage[]) => [
+              ...current,
+              userMessage,
+              { ...placeholder, content: [toolCall('call-1')] } as TMessage,
+            ],
+          })),
+        },
+        { sendMessages: jest.fn(async () => ({ status: 'stream' as const, stream })) },
+      );
+      const sent = paused.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'pending_action', data: approval });
+      await flush();
+      return { ...paused, stream, sent };
+    };
+
+    const isDecided = (messages: TMessage[]) =>
+      messages.some((m) => JSON.stringify(m.content ?? []).includes('"decision":"approve"'));
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'keeps a row a store subscriber appended inside an approval write and resumes once, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        const { chat, transport, stream, sent } = await pauseForApproval(state);
+        state.subscribe?.(() => {
+          const current = state.messages;
+          if (isDecided(current) && !current.some((m) => m.messageId === external.messageId)) {
+            state.replaceMessages([...current, external]);
+          }
+        });
+
+        await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+
+        expect(transport.resume).toHaveBeenCalledTimes(1);
+        expect(state.messages.map((m) => m.messageId)).toContain(external.messageId);
+        stream.push(finalEvent({ requestMessage: null, responseMessage: null }));
+        await sent;
+        expect(state.messages.map((m) => m.messageId)).toContain(external.messageId);
+      },
+    );
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'sends no resume once a store subscriber disposes the chat inside an approval write, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        const { chat, transport, sent } = await pauseForApproval(state);
+        let disposed = false;
+        state.subscribe?.(() => {
+          if (!disposed && isDecided(state.messages)) {
+            disposed = true;
+            chat.dispose();
+          }
+        });
+
+        await chat.addToolApprovalResponse({ id: 'call-1', approved: true }).catch(() => undefined);
+        await sent;
+
+        expect(disposed).toBe(true);
+        expect(transport.resume).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it('reports an error the generation itself sent on an attachment as terminal', async () => {
