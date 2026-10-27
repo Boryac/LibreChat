@@ -264,7 +264,12 @@ describe('auth user document cache helpers', () => {
 
   it('returns cached user documents only for the current cache version', async () => {
     const store = makeStore();
-    store.values.set('current', { version: 2, cachedAt: Date.now(), user: { id: 'user-1' } });
+    store.values.set('current', {
+      version: 2,
+      cachedAt: Date.now(),
+      expiresAt: Date.now() + AUTH_USER_DOC_CACHE_TTL_MS,
+      user: { id: 'user-1' },
+    });
     store.values.set('stale', { version: 1, cachedAt: Date.now(), user: { id: 'user-2' } });
 
     await expect(getCachedAuthUserDoc(store, 'current')).resolves.toEqual({ id: 'user-1' });
@@ -368,6 +373,74 @@ describe('auth user document cache helpers', () => {
     };
 
     await expect(getCachedAuthUserDoc(store, 'auth-user-doc:v2:key')).resolves.toBeUndefined();
+  });
+
+  describe('when the write stalls after the lookup', () => {
+    let now: number;
+    beforeEach(() => {
+      now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+    });
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    /** The index write stalls while an eviction lands, then the stale document is written. */
+    function stallIndexWrite(store: ReturnType<typeof makeStore>, userId: string, stallMs: number) {
+      const indexKey = buildAuthUserDocReverseIndexKey(userId);
+      store.set.mockImplementation(async (key: string, value: unknown) => {
+        if (key === indexKey) {
+          await invalidateCachedAuthUserDoc(store, { userId });
+          now += stallMs;
+        }
+        store.values.set(key, value);
+        return true;
+      });
+    }
+
+    it('anchors the expiry of a late stale document to its lookup, not to the write', async () => {
+      const store = makeStore();
+      const userId = new Types.ObjectId();
+      const lookupStartedAt = now;
+      now += 4_000;
+      stallIndexWrite(store, userId.toString(), 5_500);
+
+      await setCachedAuthUserDoc(
+        store,
+        'auth-user-doc:v2:stalled',
+        { _id: userId, email: 'before@example.com' },
+        lookupStartedAt,
+      );
+
+      const ttl = store.set.mock.calls.find(([key]) => key === 'auth-user-doc:v2:stalled')?.[2];
+      expect(ttl).toBe(lookupStartedAt + AUTH_USER_DOC_CACHE_TTL_MS * 2 - now);
+      await expect(
+        getCachedAuthUserDoc(store, 'auth-user-doc:v2:stalled'),
+      ).resolves.toBeUndefined();
+
+      /** Even with the eviction fence gone and the entry somehow kept, it is past its expiry. */
+      store.values.delete(buildAuthUserDocEvictionFenceKey(userId.toString()));
+      now = lookupStartedAt + AUTH_USER_DOC_CACHE_TTL_MS * 2 + 1;
+      await expect(
+        getCachedAuthUserDoc(store, 'auth-user-doc:v2:stalled'),
+      ).resolves.toBeUndefined();
+    });
+
+    it('does not write a document whose lookup is two TTLs old once the index write returns', async () => {
+      const store = makeStore();
+      const userId = new Types.ObjectId();
+      const lookupStartedAt = now;
+      stallIndexWrite(store, userId.toString(), AUTH_USER_DOC_CACHE_TTL_MS * 2);
+
+      await setCachedAuthUserDoc(
+        store,
+        'auth-user-doc:v2:expired',
+        { _id: userId, email: 'before@example.com' },
+        lookupStartedAt,
+      );
+
+      expect(store.values.has('auth-user-doc:v2:expired')).toBe(false);
+    });
   });
 
   it('logs cache failures without throwing', async () => {
