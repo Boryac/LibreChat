@@ -4551,6 +4551,44 @@ describe('Chat', () => {
       );
     });
 
+    it('undoes the optimistic rows of a retry the server attached to the dropped generation', async () => {
+      const retryUser: TMessage = { ...userMessage, messageId: 'user-2', text: 'Again' };
+      const retryResponse: TMessage = {
+        ...placeholder,
+        messageId: 'response-2',
+        parentMessageId: 'user-2',
+      };
+      const prepareRequest = jest.fn(() => ({
+        payload,
+        messages: (current: TMessage[]) => [...current, userMessage, placeholder],
+      }));
+      const { chat, stream, transport } = setup({ prepareRequest });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+
+      const attached = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      let attachedWith: string[] = [];
+      transport.sendMessages.mockImplementationOnce(async () => {
+        await flush();
+        return { status: 'stream', stream: attached };
+      });
+      prepareRequest.mockImplementationOnce(() => ({
+        payload,
+        messages: (current: TMessage[]) => [...current, retryUser, retryResponse],
+      }));
+      const retry = chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+      await flush();
+      await flush();
+      attachedWith = chat.messages.map((message) => message.messageId);
+      attached.push(finalEvent());
+      await retry;
+
+      expect(attachedWith).toEqual(['user-1', 'response-1']);
+      expect(chat.messages.map((message) => message.messageId)).toEqual(['user-1', 'response-1']);
+    });
+
     it('ignores a late status read for a generation whose own stream ended it', async () => {
       const { chat, stream } = setup();
       const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });

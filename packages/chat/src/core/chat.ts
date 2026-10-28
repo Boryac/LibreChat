@@ -1889,6 +1889,13 @@ export class Chat {
           /** The server attached the start to the dropped generation, whose record it continues. */
           active.generation = dropped.generation;
           active.inheritedGeneration = generationCreatedAt;
+          const rollback = active.optimistic;
+          if (rollback) {
+            /** That generation is not this turn, so this turn's optimistic write is undone. */
+            await this.executor.run(() => {
+              this.write(undoOptimisticWrite(rollback, this.messages));
+            });
+          }
         }
       } else if (result.status === 'replaced') {
         const rollback = active.optimistic;
