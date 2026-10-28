@@ -216,6 +216,11 @@ type Generation = {
   settledAs?: ChatStreamAbortResult['terminalStatus'];
   /** The stop ended the run without saving its terminal state, which a reconcile frame reports. */
   persistenceFailed?: boolean;
+  /**
+   * The server confirmed it stopped the stream, whose abort frame carries the saved response. A
+   * request that ends without that frame leaves the host to reload what the server kept.
+   */
+  stopFramed?: boolean;
   /** The conversation a stop's answer named, authoritative while the chat still holds `new`. */
   stoppedConversationId?: string;
   /** Resolves once a stop sent for this generation was answered, either way. */
@@ -358,6 +363,7 @@ const getSettledOutcome = (
 const getStopOutcome = (stop: {
   settledAs?: ChatStreamAbortResult['terminalStatus'];
   persistenceFailed?: boolean;
+  stopFramed?: boolean;
   /** The conversation the stop's answer named, which the host reloads. */
   stoppedConversationId?: string;
 }): Outcome => {
@@ -366,7 +372,11 @@ const getStopOutcome = (stop: {
   if (stop.persistenceFailed) {
     return { kind: 'abort', settled: { ...settled, reason: 'abort_persistence_failed' } };
   }
-  return stop.settledAs ? getSettledOutcome(stop.settledAs, settled) : { kind: 'abort' };
+  if (stop.settledAs) {
+    return getSettledOutcome(stop.settledAs, settled);
+  }
+  /** Read only where no abort frame ended the request, so the saved response was never received. */
+  return stop.stopFramed ? { kind: 'abort', settled } : { kind: 'abort' };
 };
 
 /** The server answered that no such generation runs, rather than failing to answer. */
@@ -1194,6 +1204,8 @@ export class Chat {
       if (!generation.settledAs && isStreamAbort(result) && result.persistenceFailed) {
         generation.persistenceFailed = true;
       }
+      generation.stopFramed =
+        isStreamAbort(result) && !generation.settledAs && !generation.persistenceFailed;
       return result;
     });
     generation.stopping = answer;
@@ -1344,17 +1356,19 @@ export class Chat {
   /**
    * The conversation a stop that named its stream ended. The answer names only the stream, so the
    * generation's known conversation wins; a first turn no frame named yet falls back to that
-   * stream id, which a resumable server keys by the conversation it created.
+   * stream id, which a resumable server keys by the conversation it created. A run that settled
+   * before the stop reached it names that stream as `streamId` instead of `aborted`.
    */
   private stoppedConversationId(
     generation: Generation,
     result: ChatStreamAbortResult,
   ): string | undefined {
-    if (result.aborted == null) {
+    const stream = result.aborted ?? result.streamId;
+    if (stream == null) {
       return undefined;
     }
     const known = generation.conversationId ?? this.conversationId;
-    return known !== Constants.NEW_CONVO ? known : result.aborted;
+    return known !== Constants.NEW_CONVO ? known : stream;
   }
 
   /** `conversationId:responseMessageId` of a run with no resumable stream (Assistants). */
@@ -2577,8 +2591,12 @@ export class Chat {
     } finally {
       if (this.resuming === action.actionId) {
         this.resuming = undefined;
-        if (this.action === action && isExpired(action)) {
-          /** Its expiry passed while the answer was in flight, which then left it unresolved. */
+        const held = this.action;
+        if (held?.actionId === action.actionId && isExpired(held)) {
+          /**
+           * Its expiry passed while the answer was in flight, which then left it unresolved. A
+           * status read may have restored a copy of it meanwhile, so the held copy is the one read.
+           */
           this.clearAction();
         }
       }

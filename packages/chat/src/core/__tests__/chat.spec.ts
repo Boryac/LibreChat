@@ -897,6 +897,30 @@ describe('Chat', () => {
     expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ isAbort: true }));
   });
 
+  it('asks the host to reload a confirmed stop whose abort frame the dropped stream lost', async () => {
+    const { chat, stream, transport, onFinish } = setup();
+    transport.abort.mockImplementation(async () => {
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      return { success: true, aborted: 'convo-1' };
+    });
+    const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    stream.push(stepEvent);
+    await flush();
+
+    await chat.stop();
+    await sent;
+
+    expect(onFinish).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        isAbort: true,
+        isDisconnect: false,
+        isSettled: true,
+        conversationId: 'convo-1',
+      }),
+    );
+  });
+
   it('reports a failed stop of a start that arrived after it', async () => {
     let open: (() => void) | undefined;
     const stream = createStream({ streamId: 'convo-1' });
@@ -2686,6 +2710,29 @@ describe('Chat', () => {
       expect(chat.pendingAction).toBeUndefined();
     });
 
+    it('drops an expired copy of the pause a status read restored while its answer was in flight', async () => {
+      let refuse: (error: Error) => void = () => undefined;
+      const resume = jest.fn(
+        () =>
+          new Promise<never>((_, reject) => {
+            refuse = reject;
+          }),
+      );
+      const { chat } = setup({}, { resume });
+      const action = { ...askAction, expiresAt: Date.now() + 30 };
+      chat.restorePendingAction(action, 500);
+
+      const answered = chat.addToolOutput({ toolCallId: 'ask-1', output: 'x' });
+      await flush();
+      chat.restorePendingAction({ ...action }, 500);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(chat.pendingAction?.actionId).toBe(askAction.actionId);
+
+      refuse(Object.assign(new Error('Service unavailable'), { response: { status: 503 } }));
+      await expect(answered).rejects.toThrow('Service unavailable');
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
     it('stops the expiry of a pause the chat no longer holds or that was disposed', async () => {
       const { chat } = setup();
       const listener = jest.fn();
@@ -3418,6 +3465,36 @@ describe('Chat', () => {
           conversationId: 'convo-9',
           reconcileReason: 'abort_persistence_failed',
         }),
+      );
+    });
+
+    it('adopts the conversation a settled stop of a dropped first turn names by its stream', async () => {
+      const { chat, stream, transport, onFinish } = setup({ id: 'new' });
+      transport.abort.mockResolvedValue({
+        success: false,
+        settled: true,
+        code: 'RUN_ALREADY_SETTLED',
+        streamId: 'convo-9',
+        generationProtocolVersion: 2,
+        terminalStatus: 'complete',
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+
+      await expect(chat.stop()).resolves.toMatchObject({
+        status: 'stopped',
+        conversationId: 'convo-9',
+      });
+      expect(onFinish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isSettled: true, conversationId: 'convo-9' }),
+      );
+
+      void chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] });
+      await flush();
+      expect(transport.sendMessages).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chatId: 'convo-9' }),
       );
     });
 

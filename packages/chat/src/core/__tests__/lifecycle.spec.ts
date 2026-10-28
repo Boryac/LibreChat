@@ -504,6 +504,8 @@ const done = { isAbort: false, isDisconnect: false, isError: false, isSettled: f
 const aborted = { ...done, isAbort: true };
 const dropped = { ...done, isError: true, isDisconnect: true };
 const settled = { ...done, isSettled: true };
+/** A confirmed stop whose abort frame never arrived, which the host reloads. */
+const stoppedUnframed = { ...aborted, isSettled: true };
 const unsaved = {
   ...aborted,
   isSettled: true,
@@ -566,7 +568,7 @@ const table: Array<[keyof typeof states, keyof typeof events, Expected]> = [
       status: 'ready',
       connection: 'idle',
       finishes: 1,
-      last: aborted,
+      last: stoppedUnframed,
       abort: { streamId: 'convo-1', generationCreatedAt: 300 },
     },
   ],
