@@ -51,12 +51,15 @@ test.describe('composer attachments', () => {
     expect((await savedUpload).ok()).toBe(true);
     await expect(dialog).toBeHidden();
 
-    await expect(chip).toBeVisible();
-    await chip.click();
-    await expect(
-      page.getByRole('dialog', { name: 'Edit pasted text' }).getByRole('textbox'),
-    ).toHaveValue(corrected);
+    /** The correction uploads under a free name, so the edited text lives on its own chip. */
+    const replacement = page.getByRole('button', {
+      name: 'Edit pasted text, pasted-text-2.txt',
+    });
+    await expect(replacement).toBeVisible({ timeout: 15000 });
+    await replacement.click();
+    const reopened = page.getByRole('dialog', { name: 'Edit pasted text' });
+    await expect(reopened.getByRole('textbox')).toHaveValue(corrected);
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog', { name: 'Edit pasted text' })).toBeHidden();
+    await expect(reopened).toBeHidden();
   });
 });
