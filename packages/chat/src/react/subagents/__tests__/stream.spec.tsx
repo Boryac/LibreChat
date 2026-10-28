@@ -26,28 +26,38 @@ type MockStream = {
   listeners: Record<string, Listener>;
   close: jest.Mock;
   emit: (type: string, data: unknown) => void;
+  /** The connection failed with an HTTP status (sse.js reports it on `error`). */
+  refuse: (status: number) => void;
+  /** The response body ended; sse.js reports only the closed ready state. */
+  end: () => void;
 };
 
 const streams: MockStream[] = [];
 jest.mock('sse.js', () => ({
-  SSE: jest.fn().mockImplementation((url: string, options: MockStream['options']) => {
-    const listeners: Record<string, Listener> = {};
-    const stream: MockStream = {
-      url,
-      options,
-      listeners,
-      close: jest.fn(),
-      emit: (type, data) => listeners[type]?.({ data: JSON.stringify(data) } as MessageEvent),
-    };
-    streams.push(stream);
-    return {
-      addEventListener: (type: string, listener: Listener) => {
-        listeners[type] = listener;
-      },
-      close: stream.close,
-      stream: jest.fn(),
-    };
-  }),
+  SSE: Object.assign(
+    jest.fn().mockImplementation((url: string, options: MockStream['options']) => {
+      const listeners: Record<string, Listener> = {};
+      const stream: MockStream = {
+        url,
+        options,
+        listeners,
+        close: jest.fn(),
+        emit: (type, data) => listeners[type]?.({ data: JSON.stringify(data) } as MessageEvent),
+        refuse: (status) =>
+          listeners.error?.({ data: '', responseCode: status } as unknown as MessageEvent),
+        end: () => listeners.readystatechange?.({ readyState: 2 } as unknown as MessageEvent),
+      };
+      streams.push(stream);
+      return {
+        addEventListener: (type: string, listener: Listener) => {
+          listeners[type] = listener;
+        },
+        close: stream.close,
+        stream: jest.fn(),
+      };
+    }),
+    { CLOSED: 2 },
+  ),
 }));
 
 const mockInvalidateQueries = jest.fn();
@@ -868,6 +878,108 @@ describe('useSubagentActivityStream', () => {
 
     act(() => jest.advanceTimersByTime(1));
     expect(streams).toHaveLength(3);
+
+    unmount();
+    jest.useRealTimers();
+  });
+
+  it('stops for good when the activity route refuses the task', () => {
+    jest.useFakeTimers();
+    const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
+
+    act(() => {
+      streams[0].refuse(404);
+    });
+    expect(streams[0].close).toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(60_000));
+    expect(streams).toHaveLength(1);
+
+    unmount();
+    jest.useRealTimers();
+  });
+
+  it('still retries a rate-limited or timed-out attach', () => {
+    jest.useFakeTimers();
+    const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
+
+    act(() => {
+      streams[0].refuse(429);
+    });
+    act(() => jest.advanceTimersByTime(500));
+    expect(streams).toHaveLength(2);
+    act(() => {
+      streams[1].refuse(408);
+    });
+    act(() => jest.advanceTimersByTime(1_000));
+    expect(streams).toHaveLength(3);
+
+    unmount();
+    jest.useRealTimers();
+  });
+
+  it('bounds reconnects when the feed keeps ending as unavailable before any live update', () => {
+    jest.useFakeTimers();
+    const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
+    const unavailable = (index: number) => {
+      act(() => {
+        streams[index].emit('message', { error: 'Subagent activity stream unavailable' });
+        streams[index].end();
+      });
+    };
+
+    unavailable(0);
+    const delays: number[] = [];
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const before = streams.length;
+      let waited = 0;
+      while (streams.length === before && waited < 60_000) {
+        act(() => jest.advanceTimersByTime(100));
+        waited += 100;
+      }
+      if (streams.length === before) break;
+      delays.push(waited);
+      unavailable(streams.length - 1);
+    }
+
+    expect(delays).toEqual([500, 1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 5_000]);
+    expect(streams).toHaveLength(9);
+
+    unmount();
+    jest.useRealTimers();
+  });
+
+  it('resets the reconnect budget once a live update arrives', () => {
+    jest.useFakeTimers();
+    const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
+    const live = {
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: selection.toolCallId,
+        activityEventId: 'task:0',
+        activitySequence: 0,
+        phase: 'message_delta',
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data: { delta: { content: [{ type: ContentTypes.TEXT, text: 'alive' }] } },
+      },
+    };
+
+    for (let index = 0; index < 8; index++) {
+      act(() => {
+        streams[index].end();
+      });
+      act(() => jest.advanceTimersByTime(5_000));
+    }
+    expect(streams).toHaveLength(9);
+    act(() => {
+      streams[8].emit('message', live);
+      streams[8].end();
+    });
+    act(() => jest.advanceTimersByTime(500));
+    expect(streams).toHaveLength(10);
 
     unmount();
     jest.useRealTimers();

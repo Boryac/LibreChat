@@ -33,6 +33,14 @@ const readyReaders = new Map<string, number>();
 
 const INITIAL_RECONNECT_MS = 500;
 const MAX_RECONNECT_MS = 5_000;
+/** Reconnects in a row that deliver no live update before the feed gives up; the durable
+ *  thread query keeps polling, so the panel still converges on the stored transcript. */
+const MAX_IDLE_RECONNECTS = 8;
+
+/** A refusal no retry can clear: the task is gone or not the viewer's. 401 arrives here only
+ *  after the transport's own refresh failed; 408 and 429 are worth retrying. */
+const isRefusal = (status?: number): boolean =>
+  status != null && status >= 400 && status < 500 && status !== 408 && status !== 429;
 
 const isSubagentUpdate = (value: unknown): value is SubagentUpdateEvent => {
   if (value == null || typeof value !== 'object') return false;
@@ -146,6 +154,7 @@ export function useSubagentActivityStream(
     let stream: AbortController | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryAttempt = 0;
+    let idleReconnects = 0;
     let disposed = false;
     let terminal = false;
 
@@ -165,6 +174,11 @@ export function useSubagentActivityStream(
         if (event.type === 'error') {
           setReady(true);
           refreshContent();
+          if (isRefusal(event.status)) {
+            terminal = true;
+            closeCurrent();
+            return;
+          }
           reconnect();
           return;
         }
@@ -240,6 +254,7 @@ export function useSubagentActivityStream(
           return;
         }
         retryAttempt = 0;
+        idleReconnects = 0;
         registerSubagentProgressKey(key);
         setProgress((previous) =>
           reduceSubagentProgress(
@@ -265,6 +280,11 @@ export function useSubagentActivityStream(
     const reconnect = () => {
       if (disposed || terminal || retryTimer != null) return;
       closeCurrent();
+      if (idleReconnects >= MAX_IDLE_RECONNECTS) {
+        terminal = true;
+        return;
+      }
+      idleReconnects += 1;
       const delay = Math.min(INITIAL_RECONNECT_MS * 2 ** retryAttempt, MAX_RECONNECT_MS);
       retryAttempt += 1;
       retryTimer = setTimeout(connect, delay);
