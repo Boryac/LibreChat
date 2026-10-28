@@ -3,6 +3,7 @@ import { MCPIcon } from '@librechat/client';
 import { PermissionBits, hasPermissions } from 'librechat-data-provider';
 import type { MCPServerStatusIconProps } from '~/components/MCP/MCPServerStatusIcon';
 import type { MCPServerDefinition } from '~/hooks';
+import { isMCPServerOnDemand } from '~/components/MCP/mcpServerUtils';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import { useMCPServerManager, useLocalize } from '~/hooks';
 import { getStatusDotColor } from './MCPStatusBadge';
@@ -95,7 +96,8 @@ export default function MCPServerCard({
     if (!serverStatus) return localize('com_nav_mcp_status_unknown');
     const { connectionState, requiresOAuth } = serverStatus;
     if (connectionState === 'connecting') return localize('com_nav_mcp_status_connecting');
-    if (serverStatus.requestScoped) return localize('com_nav_mcp_status_on_demand');
+    if (serverStatus.requestScoped || isMCPServerOnDemand(serverStatus))
+      return localize('com_nav_mcp_status_on_demand');
     if (connectionState === 'connected') return localize('com_nav_mcp_status_connected');
     if (connectionState === 'error') return localize('com_nav_mcp_status_error');
     if (connectionState === 'disconnected') {

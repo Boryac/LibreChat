@@ -2,6 +2,7 @@ import React from 'react';
 import { KeyRound, PlugZap, X } from 'lucide-react';
 import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import { isMCPServerOnDemand } from '~/components/MCP/mcpServerUtils';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -71,6 +72,12 @@ export default function MCPServerStatusIcon({
     return null;
   }
 
+  if (isMCPServerOnDemand(serverStatus)) {
+    return hasCustomUserVars ? (
+      <ConfigureButton serverName={serverName} onConfigClick={onConfigClick} />
+    ) : null;
+  }
+
   const { connectionState, requestScoped } = serverStatus;
 
   // Connecting: show spinner, with cancel when an OAuth flow is pending.
@@ -138,7 +145,7 @@ function CompactStatusDot({ serverStatus, isInitializing }: CompactStatusDotProp
   let colorClass = 'bg-status-neutral';
   if (connectionState === 'connecting') {
     colorClass = 'bg-status-info';
-  } else if (serverStatus.requestScoped) {
+  } else if (serverStatus.requestScoped || isMCPServerOnDemand(serverStatus)) {
     colorClass = 'bg-status-info';
   } else if (connectionState === 'connected') {
     colorClass = 'bg-status-success';

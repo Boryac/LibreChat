@@ -541,7 +541,7 @@ jobs:
           E2E_STREAM_STORE: memory
         run: >-
           npx playwright test --config=e2e/playwright.config.mock.ts
-          mcp-tool-list-changed.spec.ts --retries=0
+          mcp-tool-list-changed.spec.ts mcp-replica-status.spec.ts --retries=0
 
       - name: Test MCP notifications with standalone Redis cache
         env:
@@ -549,7 +549,7 @@ jobs:
           REDIS_URI: redis://127.0.0.1:6379
         run: >-
           npx playwright test --config=e2e/playwright.config.mock.ts
-          mcp-tool-list-changed.spec.ts --retries=0
+          mcp-tool-list-changed.spec.ts mcp-replica-status.spec.ts --retries=0
 
       - name: Test MCP notifications with Redis Cluster cache
         env:
@@ -557,7 +557,7 @@ jobs:
           REDIS_URI: redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003
         run: >-
           npx playwright test --config=e2e/playwright.config.mock.ts
-          mcp-tool-list-changed.spec.ts --retries=0
+          mcp-tool-list-changed.spec.ts mcp-replica-status.spec.ts --retries=0
 
       - name: Upload Playwright HTML report
         if: ${{ !cancelled() }}

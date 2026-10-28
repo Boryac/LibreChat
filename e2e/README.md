@@ -253,3 +253,18 @@ also requires the server's title-ownership capability; an old replica cannot adv
 With the fence off, running rows and unowned placeholder titles cannot be renamed.
 Other menu actions remain available. Settled non-placeholder chats retain Rename.
 The isolated mock profile enables the option because it contains no older replicas.
+
+## MCP replica status regression
+
+Run the on-demand status regression with two actual API processes and a disposable shared
+MongoDB. It initializes a synthetic user-scoped MCP server on replica 1, verifies that replica 2
+has no local transport, and routes browser status polls to each process. Configuration readiness
+must stay on-demand without rewriting the per-process transport diagnostics:
+
+```sh
+E2E_REPLICAS=2 E2E_USE_MEMORY_MONGO=true \
+  npx playwright test --config=e2e/playwright.config.mock.ts mcp-replica-status.spec.ts
+```
+
+The existing MCP notification CI matrix also runs this case with memory, standalone Redis,
+and Redis Cluster caches. The case skips in the normal single-process suite.

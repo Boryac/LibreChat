@@ -521,6 +521,78 @@ describe('tests for the new helper functions used by the MCP connection status e
       require('~/models').findToken.mockReset();
     });
 
+    it('reports the same on-demand mode on a pod with a transport and a pod without one', async () => {
+      const config = { ...mockConfig, startup: false, requiresOAuth: false };
+      const connected = new Map([
+        [
+          mockServerName,
+          {
+            connectionState: 'connected',
+            isStale: () => false,
+          },
+        ],
+      ]);
+      const firstPod = await getServerConnectionStatus(
+        mockUserId,
+        mockServerName,
+        config,
+        new Map(),
+        connected,
+        new Set(),
+      );
+      const secondPod = await getServerConnectionStatus(
+        mockUserId,
+        mockServerName,
+        config,
+        new Map(),
+        new Map(),
+        new Set(),
+      );
+      expect(firstPod).toMatchObject({ onDemand: true, authorizationState: 'not_required' });
+      expect(secondPod).toMatchObject({ onDemand: true, authorizationState: 'not_required' });
+      expect(firstPod.connectionState).toBe('connected');
+      expect(secondPod.connectionState).toBe('disconnected');
+    });
+
+    it.each([
+      { startup: true, requiresOAuth: false },
+      { startup: false, requiresOAuth: true },
+      { startup: false },
+    ])('does not infer on-demand mode from an implicit or OAuth config %j', async (settings) => {
+      const result = await getServerConnectionStatus(
+        mockUserId,
+        mockServerName,
+        { ...mockConfig, ...settings },
+        new Map(),
+        new Map(),
+        new Set(),
+      );
+      expect(result.onDemand).toBeUndefined();
+    });
+
+    it('reports missing user variables without treating configuration as authorization', async () => {
+      const result = await getServerConnectionStatus(
+        mockUserId,
+        mockServerName,
+        {
+          ...mockConfig,
+          startup: false,
+          requiresOAuth: false,
+          customUserVars: { API_KEY: { title: 'API key' } },
+        },
+        new Map(),
+        new Map(),
+        new Set(),
+        { userMCPAuthMap: {} },
+      );
+      expect(result).toMatchObject({
+        onDemand: true,
+        configurationState: 'needs_configuration',
+        connectionState: 'disconnected',
+        authorizationState: 'not_required',
+      });
+    });
+
     it('should return app connection state when available', async () => {
       const appConnections = new Map([
         [

@@ -1,6 +1,7 @@
 import { Spinner } from '@librechat/client';
 import { Check, KeyRound, Zap } from 'lucide-react';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import { isMCPServerOnDemand } from '~/components/MCP/mcpServerUtils';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -66,7 +67,7 @@ export default function MCPStatusBadge({
     );
   }
 
-  if (serverStatus.requestScoped) {
+  if (serverStatus.requestScoped || isMCPServerOnDemand(serverStatus)) {
     return (
       <div role="status" className={cn(badgeBaseClass, 'bg-status-info-subtle text-status-info')}>
         <Zap className="size-3" aria-hidden="true" />
@@ -156,7 +157,7 @@ export function getStatusDotColor(
     return 'bg-status-info';
   }
 
-  if (serverStatus.requestScoped) {
+  if (serverStatus.requestScoped || isMCPServerOnDemand(serverStatus)) {
     return 'bg-status-info';
   }
 

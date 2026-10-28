@@ -61,6 +61,18 @@ export function getSelectedServerIcons(
   return { icons: visibleIcons, overflowCount, defaultServerNames };
 }
 
+/** An explicit on-demand configuration describes how a server is used, not a live socket.
+ * A failed attempt or missing user configuration still needs attention. */
+export function isMCPServerOnDemand(status: MCPServerStatus | undefined): boolean {
+  return (
+    status?.onDemand === true &&
+    !status.requiresOAuth &&
+    status.authorizationState === 'not_required' &&
+    status.configurationState !== 'needs_configuration' &&
+    (status.connectionState === 'connected' || status.connectionState === 'disconnected')
+  );
+}
+
 /**
  * Unified status color system following UX best practices:
  * - Green: Connected/Active (success)
@@ -94,7 +106,7 @@ export function getStatusColor(
     return 'bg-status-info';
   }
 
-  if (requestScoped) {
+  if (requestScoped || isMCPServerOnDemand(status)) {
     return 'bg-status-info';
   }
 
@@ -141,7 +153,7 @@ export function getStatusTextKey(
     return 'com_nav_mcp_status_connecting';
   }
 
-  if (requestScoped) {
+  if (requestScoped || isMCPServerOnDemand(status)) {
     return 'com_nav_mcp_status_on_demand';
   }
 
@@ -171,14 +183,18 @@ export function isMCPServerReadyForAgent(
   requestScoped: boolean,
   hasCustomUserVars = false,
 ): boolean {
-  if (requestScoped && hasCustomUserVars && status?.configurationState !== 'configured') {
+  if (
+    (requestScoped || status?.onDemand) &&
+    hasCustomUserVars &&
+    status?.configurationState !== 'configured'
+  ) {
     return false;
   }
   if (status?.connectionState === 'connected') {
     return true;
   }
   if (!requestScoped) {
-    return false;
+    return isMCPServerOnDemand(status);
   }
   return (
     status?.authorizationState === 'not_required' || status?.authorizationState === 'authorized'
@@ -200,6 +216,7 @@ export function shouldShowActionButton(statusIconProps?: MCPServerStatusIconProp
   if (isInitializing) return false;
 
   if (!serverStatus) return false;
+  if (isMCPServerOnDemand(serverStatus)) return hasCustomUserVars === true;
   const { connectionState, requiresOAuth, requestScoped } = serverStatus;
 
   // Request-scoped servers can only be initialized with an active MCP request context,

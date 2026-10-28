@@ -1,5 +1,10 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
-import { isMCPServerReadyForAgent, shouldShowActionButton } from './mcpServerUtils';
+import {
+  getStatusTextKey,
+  getStatusColor,
+  isMCPServerReadyForAgent,
+  shouldShowActionButton,
+} from './mcpServerUtils';
 
 const status = (
   connectionState: MCPServerStatus['connectionState'],
@@ -62,5 +67,29 @@ describe('shouldShowActionButton', () => {
 
     expect(shouldShowActionButton({ ...baseProps, hasCustomUserVars: true })).toBe(true);
     expect(shouldShowActionButton({ ...baseProps, hasCustomUserVars: false })).toBe(false);
+  });
+});
+
+describe('on-demand configuration status across replicas', () => {
+  const idle = { ...status('disconnected', 'not_required'), onDemand: true };
+  const connected = { ...idle, connectionState: 'connected' as const };
+  it('uses the same on-demand label and color with and without a local transport', () => {
+    for (const value of [idle, connected]) {
+      expect(getStatusTextKey('server', { server: value })).toBe('com_nav_mcp_status_on_demand');
+      expect(getStatusColor('server', { server: value })).toBe('bg-status-info');
+      expect(isMCPServerReadyForAgent(value, false)).toBe(true);
+    }
+  });
+  it('keeps missing configuration, explicit failures and pending authorization unready', () => {
+    expect(
+      isMCPServerReadyForAgent({ ...idle, configurationState: 'needs_configuration' }, false, true),
+    ).toBe(false);
+    expect(isMCPServerReadyForAgent({ ...idle, connectionState: 'error' }, false)).toBe(false);
+    expect(
+      isMCPServerReadyForAgent({ ...idle, authorizationState: 'needs_authorization' }, false),
+    ).toBe(false);
+    expect(getStatusTextKey('server', { server: { ...idle, connectionState: 'error' } })).toBe(
+      'com_nav_mcp_status_error',
+    );
   });
 });

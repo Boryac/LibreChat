@@ -2,6 +2,7 @@ import React from 'react';
 import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import { KeyRound, Pencil, PlugZap, RefreshCw, Unlink, X } from 'lucide-react';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import { isMCPServerOnDemand } from '~/components/MCP/mcpServerUtils';
 import { cn, rowActionClasses, rowActionSlotClasses } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -54,6 +55,7 @@ export default function MCPCardActions({
   const localize = useLocalize();
 
   const connectionState = serverStatus?.connectionState;
+  const isOnDemand = isMCPServerOnDemand(serverStatus);
   const isConnected = connectionState === 'connected';
   const isConnecting = connectionState === 'connecting';
   const isDisconnected = connectionState === 'disconnected';
@@ -134,7 +136,7 @@ export default function MCPCardActions({
       )}
 
       {/* Connect button - for disconnected or error states */}
-      {(isDisconnected || isError) && !serverStatus?.requestScoped && (
+      {(isDisconnected || isError) && !serverStatus?.requestScoped && !isOnDemand && (
         <RowAction label={localize('com_nav_mcp_connect')} onClick={() => onInitialize()}>
           <PlugZap className="size-4" aria-hidden="true" />
         </RowAction>
@@ -142,14 +144,14 @@ export default function MCPCardActions({
 
       {/* On-demand servers stay idle between requests, so their user variables
           must remain configurable without a live transport connection. */}
-      {(isConnected || serverStatus?.requestScoped) && hasCustomUserVars && (
+      {(isConnected || serverStatus?.requestScoped || isOnDemand) && hasCustomUserVars && (
         <RowAction label={localize('com_ui_configure')} onClick={onConfigClick}>
           <KeyRound className="size-4" aria-hidden="true" />
         </RowAction>
       )}
 
       {/* Refresh button - for connected servers (allows reconnection) */}
-      {isConnected && !serverStatus?.requestScoped && (
+      {(isConnected || isOnDemand) && !serverStatus?.requestScoped && (
         <RowAction label={localize('com_nav_mcp_reconnect')} onClick={() => onInitialize()}>
           <RefreshCw className="size-4" aria-hidden="true" />
         </RowAction>

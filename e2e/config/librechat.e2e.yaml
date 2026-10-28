@@ -84,6 +84,18 @@ mcpServers:
     title: E2E Memory
     description: Local MCP fixture used by mock end-to-end tests.
     timeout: 30000
+  e2e-on-demand:
+    type: stdio
+    command: node
+    args:
+      - e2e/setup/fake-mcp-server.js
+    startup: false
+    requiresOAuth: false
+    env:
+      E2E_MCP_USER_ID: '{{LIBRECHAT_USER_ID}}'
+    title: E2E On Demand
+    description: Synthetic user-scoped server for replica status regressions.
+    timeout: 30000
   e2e-user-vars:
     type: stdio
     command: node

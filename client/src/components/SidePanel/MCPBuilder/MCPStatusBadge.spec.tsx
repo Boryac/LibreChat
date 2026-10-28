@@ -13,6 +13,32 @@ jest.mock('@librechat/client', () => ({
 }));
 
 describe('MCPStatusBadge', () => {
+  test.each(['disconnected', 'connected'] as const)(
+    'renders explicit on-demand configuration with a %s local transport',
+    (connectionState) => {
+      const serverStatus: MCPServerStatus = {
+        connectionState,
+        requiresOAuth: false,
+        authorizationState: 'not_required',
+        onDemand: true,
+      };
+      render(<MCPStatusBadge serverStatus={serverStatus} />);
+      expect(screen.getByRole('status')).toHaveTextContent('com_nav_mcp_status_on_demand');
+      expect(getStatusDotColor(serverStatus)).toBe('bg-status-info');
+    },
+  );
+  test('preserves an explicit failure on an on-demand configuration', () => {
+    const serverStatus: MCPServerStatus = {
+      connectionState: 'error',
+      requiresOAuth: false,
+      authorizationState: 'not_required',
+      onDemand: true,
+    };
+    render(<MCPStatusBadge serverStatus={serverStatus} />);
+    expect(screen.getByRole('status')).toHaveTextContent('com_nav_mcp_status_error');
+    expect(getStatusDotColor(serverStatus)).toBe('bg-status-error');
+  });
+
   test.each(['disconnected', 'connected', 'error'] as const)(
     'renders the %s request-scoped state as on-demand',
     (connectionState) => {
