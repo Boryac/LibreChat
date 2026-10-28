@@ -16,7 +16,14 @@ export function useMCPConnectionStatus({ enabled }: { enabled?: boolean } = {}) 
   for (const name of names) {
     const remote = data?.connectionStatus[name];
     const result = results[name];
-    const useResult = result && !canReconcileMCPResult(result, remote, dataUpdatedAt);
+    const useResult =
+      result &&
+      !canReconcileMCPResult(
+        result,
+        remote,
+        dataUpdatedAt,
+        isError ? undefined : data?.readStartedAt,
+      );
     const status = useResult ? result.status : remote;
     if (!status) continue;
     const receivedAt = useResult ? result.receivedAt : dataUpdatedAt;

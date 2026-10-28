@@ -151,6 +151,8 @@ export async function getMCPServerConnectionStatus<Context>(
     !requestScoped &&
     (shared?.statusUnavailable === true || authorizationState !== 'needs_authorization');
   return {
+    connectionObservationAvailable: observation?.generation != null,
+    ...(observation?.generation && { authorizationGeneration: observation.generation }),
     ...(shared && {
       connectionAttempt: projectMCPConnectionAttempt(shared, observation?.generation),
     }),
@@ -170,10 +172,38 @@ export function getUnavailableMCPServerStatus(
 ): MCPServerStatus {
   return {
     connectionState: 'disconnected',
+    connectionObservationAvailable: false,
     statusUnavailable: true,
     requiresOAuth,
     ...(requiresEphemeralUserConnection(config) && { requestScoped: true }),
     ...(requiresEphemeralUserConnection(config) &&
       hasCustomUserVars(config) && { configurationState: 'needs_configuration' as const }),
+  };
+}
+
+/** Absence is authoritative only when the surrounding read fence matches its scope. */
+export function finalizeMCPConnectionStatus(
+  status: MCPServerStatus,
+  generation?: string,
+): MCPServerStatus {
+  const available =
+    status.connectionObservationAvailable === true &&
+    generation != null &&
+    status.authorizationGeneration === generation;
+  if (status.connectionObservationAvailable && !available) {
+    return {
+      ...status,
+      connectionObservationAvailable: false,
+      connectionState: 'disconnected',
+      connectionAttempt: undefined,
+      authorizationGeneration: undefined,
+      authorizationState: undefined,
+      statusUnavailable: true,
+    };
+  }
+  return {
+    ...status,
+    connectionObservationAvailable: available,
+    authorizationGeneration: generation,
   };
 }

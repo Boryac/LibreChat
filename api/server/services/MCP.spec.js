@@ -552,6 +552,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: false,
         connectionState: 'disconnected',
         statusUnavailable: true,
@@ -582,6 +584,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: false,
         connectionState: 'disconnected',
         statusUnavailable: true,
@@ -604,6 +608,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: false,
         connectionState: 'disconnected',
         statusUnavailable: true,
@@ -626,6 +632,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: false,
         requiresOAuth: false,
         requestScoped: true,
         connectionState: 'disconnected',
@@ -696,6 +703,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: false,
         connectionState: 'disconnected',
         statusUnavailable: true,
@@ -759,6 +768,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'error',
         authorizationState: 'error',
@@ -798,6 +809,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connecting',
         authorizationState: 'authorizing',
@@ -830,6 +843,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -872,6 +887,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -914,6 +931,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -961,6 +980,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -995,6 +1016,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1032,6 +1055,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: false,
         requiresOAuth: true,
         requestScoped: true,
         connectionState: 'connecting',
@@ -1063,6 +1087,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: false,
         connectionState: 'disconnected',
         statusUnavailable: true,
@@ -1099,6 +1125,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -1156,6 +1184,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1219,6 +1249,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1272,6 +1304,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -1324,6 +1358,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -1359,6 +1395,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'disconnected',
         authorizationState: 'needs_authorization',
@@ -1386,6 +1424,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connecting',
         authorizationState: 'authorizing',
@@ -1425,6 +1465,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: true,
         connectionState: 'connected',
         authorizationState: 'authorized',
@@ -1455,6 +1497,8 @@ describe('tests for the new helper functions used by the MCP connection status e
       );
 
       expect(result).toEqual({
+        connectionObservationAvailable: true,
+        authorizationGeneration: 'generation-current',
         requiresOAuth: false,
         connectionState: 'disconnected',
         statusUnavailable: true,

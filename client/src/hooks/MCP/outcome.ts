@@ -34,6 +34,7 @@ export function canReconcileMCPResult(
   result: MCPConnectResult,
   remote: MCPServerStatus | undefined,
   updatedAt: number,
+  readStartedAt?: number,
 ): boolean {
   if (result.pending || updatedAt < result.receivedAt || !remote) return false;
   if (
@@ -48,7 +49,13 @@ export function canReconcileMCPResult(
   )
     return true;
   if (remote.statusUnavailable && result.status.connectionState !== 'error') return true;
-  if (!remote.connectionAttempt) return false;
+  if (!remote.connectionAttempt) {
+    return (
+      remote.connectionObservationAvailable === true &&
+      readStartedAt != null &&
+      readStartedAt > result.receivedAt
+    );
+  }
   const local = result.status.connectionAttempt;
   const next = remote.connectionAttempt;
   if (!local) return next.attemptId !== result.previousAttemptId;

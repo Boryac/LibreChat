@@ -21,3 +21,20 @@ export function getMCPReinitializeErrorMessage(
       return localize('com_ui_mcp_init_failed');
   }
 }
+
+/** A proxy/server error cannot establish whether the backend committed the operation. */
+export function isMCPDeliveryUncertain(error: unknown): boolean {
+  if (error == null || typeof error !== 'object') return false;
+  if (
+    'code' in error &&
+    ['ECONNABORTED', 'ETIMEDOUT', 'ERR_NETWORK', 'ERR_CANCELED'].includes(String(error.code))
+  )
+    return true;
+  if (!('response' in error) || error.response == null || typeof error.response !== 'object')
+    return false;
+  return (
+    'status' in error.response &&
+    typeof error.response.status === 'number' &&
+    error.response.status >= 500
+  );
+}

@@ -1,4 +1,5 @@
 import { useCallback, useState, useMemo, useRef, useEffect } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 import { useAtom, useStore } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
@@ -46,7 +47,7 @@ import {
 } from '~/hooks';
 import { mcpConnectionResultsAtom, mcpServerInitStatesAtom, getServerInitState } from '~/store/mcp';
 import { useGetStartupConfig, useMCPServersQuery, useMCPToolsQuery } from '~/data-provider';
-import { getMCPReinitializeErrorMessage } from './errors';
+import { getMCPReinitializeErrorMessage, isMCPDeliveryUncertain } from './errors';
 import { openInNewTab } from '~/utils';
 
 export interface MCPServerDefinition {
@@ -514,8 +515,9 @@ export function useMCPServerManager({
     async (serverName: string, autoOpenOAuth: boolean = true) => {
       /** connectionDeferred is reset up front so a stale value from a previous
        * attempt can never be mistaken for this attempt's outcome. */
+      // Supplying options uses getRandomValues even when native randomUUID is unavailable.
+      const requestId = uuidv4({});
       updateServerInitState(serverName, { isInitializing: true, connectionDeferred: false });
-      const requestId = crypto.randomUUID();
       const previous = queryClient.getQueryData<MCPConnectionStatusResponse>([
         QueryKeys.mcpConnectionStatus,
       ])?.connectionStatus[serverName];
@@ -627,14 +629,7 @@ export function useMCPServerManager({
       } catch (error) {
         if (connectionStore.get(mcpConnectionResultsAtom)[serverName]?.requestId !== requestId)
           return;
-        const deliveryUncertain =
-          error != null &&
-          typeof error === 'object' &&
-          'code' in error &&
-          (error.code === 'ECONNABORTED' ||
-            error.code === 'ETIMEDOUT' ||
-            error.code === 'ERR_NETWORK' ||
-            error.code === 'ERR_CANCELED');
+        const deliveryUncertain = isMCPDeliveryUncertain(error);
         publishResult({
           ...previous,
           requiresOAuth: previous?.requiresOAuth ?? false,

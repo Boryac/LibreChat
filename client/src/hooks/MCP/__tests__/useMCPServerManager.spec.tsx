@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react
 import type { MCPServersResponse, MCPReinitializeResponse } from 'librechat-data-provider';
 import { useMCPServerManager } from '../useMCPServerManager';
 import { mcpConnectionResultsAtom } from '~/store/mcp';
+import { canReconcileMCPResult } from '../outcome';
 
 const mockOpenInNewTab = jest.fn();
 jest.mock('~/utils', () => ({ openInNewTab: (...args: unknown[]) => mockOpenInNewTab(...args) }));
@@ -54,6 +55,88 @@ function deferred<T>() {
 }
 
 describe('useMCPServerManager initialization', () => {
+  it.each(['missing', 'throwing'] as const)(
+    'connects when native randomUUID is %s',
+    async (mode) => {
+      const native = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
+      Object.defineProperty(crypto, 'randomUUID', {
+        configurable: true,
+        value:
+          mode === 'missing'
+            ? undefined
+            : () => {
+                throw new Error('unavailable');
+              },
+      });
+      mockReinitialize.mockReset();
+      mockReinitialize.mockResolvedValue({ success: true, serverName: 'test-server' });
+      const queryClient = new QueryClient();
+      const wrapper = ({ children }: { children: React.ReactNode }) => (
+        <Provider>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </Provider>
+      );
+      const { result, unmount } = renderHook(() => useMCPServerManager(), { wrapper });
+      try {
+        await act(async () => {
+          await result.current.initializeServer('test-server');
+        });
+        expect(mockReinitialize).toHaveBeenCalledWith({
+          serverName: 'test-server',
+          attemptId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        });
+        expect(result.current.isInitializing('test-server')).toBe(false);
+      } finally {
+        if (native) Object.defineProperty(crypto, 'randomUUID', native);
+        else delete (crypto as Partial<Crypto>).randomUUID;
+        unmount();
+        queryClient.clear();
+      }
+    },
+  );
+  it.each([500, 502, 503, 504])(
+    'treats HTTP %s as uncertain and accepts correlated success',
+    async (status) => {
+      mockReinitialize.mockReset();
+      mockReinitialize.mockRejectedValue({ code: 'ERR_BAD_RESPONSE', response: { status } });
+      const state = createStore();
+      const queryClient = new QueryClient();
+      const wrapper = ({ children }: { children: React.ReactNode }) => (
+        <Provider store={state}>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </Provider>
+      );
+      const { result, unmount } = renderHook(() => useMCPServerManager(), { wrapper });
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        await act(async () => {
+          await result.current.initializeServer('test-server');
+        });
+        const local = state.get(mcpConnectionResultsAtom)['test-server'];
+        expect(local.status.statusUnavailable).toBe(true);
+        expect(
+          canReconcileMCPResult(
+            local,
+            {
+              requiresOAuth: false,
+              connectionState: 'connected',
+              connectionAttempt: {
+                attemptId: local.requestId!,
+                state: 'connected',
+                remainingMs: 1000,
+              },
+            },
+            local.receivedAt + 1,
+          ),
+        ).toBe(true);
+        expect(result.current.isInitializing('test-server')).toBe(false);
+      } finally {
+        consoleError.mockRestore();
+        unmount();
+        queryClient.clear();
+      }
+    },
+  );
   it.each(['response', 'http'] as const)(
     'clears the spinner after a transient %s failure and lets retry succeed without OAuth',
     async (failure) => {

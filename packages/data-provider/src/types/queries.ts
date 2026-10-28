@@ -317,6 +317,8 @@ export interface MCPConnectionAttempt {
 }
 
 export interface MCPServerStatus {
+  /** True only when the current scoped shared observation was read successfully. */
+  connectionObservationAvailable?: boolean;
   connectionAttempt?: MCPConnectionAttempt;
   /** Current connectivity cannot be confirmed; this does not imply missing credentials. */
   statusUnavailable?: boolean;

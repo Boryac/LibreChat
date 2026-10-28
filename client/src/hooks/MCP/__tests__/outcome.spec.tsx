@@ -61,6 +61,26 @@ describe('Connect outcomes and evidence freshness', () => {
     ).toBe(true);
   });
 
+  it('requires a successful absent-history lookup initiated after the local action settled', () => {
+    const result = {
+      status: { requiresOAuth: false, connectionState: 'error' as const },
+      receivedAt: 100,
+      pending: false,
+    };
+    const absent = {
+      requiresOAuth: false,
+      connectionState: 'disconnected' as const,
+      statusUnavailable: true,
+      connectionObservationAvailable: true,
+    };
+    expect(canReconcileMCPResult(result, absent, 200, 90)).toBe(false);
+    expect(canReconcileMCPResult(result, absent, 200)).toBe(false);
+    expect(
+      canReconcileMCPResult(result, { ...absent, connectionObservationAvailable: false }, 200, 110),
+    ).toBe(false);
+    expect(canReconcileMCPResult(result, absent, 200, 110)).toBe(true);
+  });
+
   it('lets an authoritative revocation override first-connect green even without a previous cached generation', () => {
     const result = { status: success, receivedAt: 100, pending: false };
     expect(
@@ -121,6 +141,58 @@ describe('Connect outcomes and evidence freshness', () => {
       client.clear();
       jest.useRealTimers();
       jest.restoreAllMocks();
+    });
+    it('replaces retained failure only after a successful authoritative absent-history read', async () => {
+      store.set(mcpConnectionResultsAtom, {
+        server: {
+          status: { requiresOAuth: false, connectionState: 'error' },
+          receivedAt: Date.now(),
+          pending: false,
+        },
+      });
+      const get = jest.spyOn(dataService, 'getMCPConnectionStatus').mockResolvedValue({
+        success: true,
+        connectionStatus: {
+          server: {
+            requiresOAuth: false,
+            connectionState: 'disconnected',
+            statusUnavailable: true,
+            connectionObservationAvailable: false,
+          },
+        },
+      });
+      const { result, unmount } = renderHook(() => useMCPConnectionStatus(), { wrapper });
+      try {
+        await act(async () => {
+          jest.advanceTimersByTime(10);
+          await client.invalidateQueries([QueryKeys.mcpConnectionStatus]);
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(10);
+        });
+        expect(result.current.connectionStatus?.server.connectionState).toBe('error');
+        get.mockResolvedValue({
+          success: true,
+          connectionStatus: {
+            server: {
+              requiresOAuth: false,
+              connectionState: 'disconnected',
+              statusUnavailable: true,
+              connectionObservationAvailable: true,
+            },
+          },
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(10);
+          await client.invalidateQueries([QueryKeys.mcpConnectionStatus]);
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(10);
+        });
+        expect(result.current.connectionStatus?.server.connectionState).toBe('disconnected');
+      } finally {
+        unmount();
+      }
     });
     it('preserves remaining freshness sampled after a slow status calculation', async () => {
       let resolve!: (value: MCPConnectionStatusResponse) => void;

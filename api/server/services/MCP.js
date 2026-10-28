@@ -1764,7 +1764,13 @@ async function getServerConnectionStatus(
     {
       getSharedState: (serverConfig) =>
         readMCPConnectionObservation(
-          { userId, serverName, serverConfig, capabilityProfile: runtimeContext.capabilityProfile },
+          {
+            userId,
+            serverName,
+            serverConfig,
+            capabilityProfile: runtimeContext.capabilityProfile,
+            timeoutMs: runtimeContext.statusReadTimeoutMs,
+          },
           {
             getGeneration: () => getMCPToolsCacheGeneration({ userId, serverName }),
             getMCPConnectionState,

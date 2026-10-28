@@ -57,11 +57,53 @@ jest.mock('@librechat/api', () => {
   const actual = jest.requireActual('@librechat/api');
   return {
     ...actual,
-    // These route-contract tests replace reinitMCPServer; the real lifecycle wrapper
-    // is exercised with actual SDK transports in the two-replica browser regression.
-    runMCPConnectionAttempt: jest.fn((params, deps) =>
-      deps.connect(() => {}, AbortSignal.timeout(60000), params.serverConfig),
-    ),
+    // Exercise the real HTTP handler, operation and store. Only external transport
+    // and database effects use fixtures; SDK behavior is covered by browser tests.
+    createMCPReinitializeHandler: (deps) => async (req, res, next) => {
+      const values = new Map();
+      const store = actual.createMCPCatalogStore({
+        getCache: () => ({
+          get: async (key) => values.get(key),
+          set: async (key, value) => {
+            values.set(key, value);
+            return true;
+          },
+          delete: async (key) => values.delete(key),
+        }),
+        cacheConfig: {},
+      });
+      return actual.createMCPReinitializeHandler({
+        ...deps,
+        invalidateCachedTools: async (scope) => {
+          await deps.invalidateCachedTools(scope);
+          await store.invalidateCachedTools(scope);
+        },
+        getMCPToolsCacheGeneration: store.getMCPToolsCacheGeneration,
+        getMCPServersRegistry: () => ({
+          ...deps.getMCPServersRegistry(),
+          getServerConfig: async (...args) => {
+            const config = await deps.getMCPServersRegistry().getServerConfig(...args);
+            return config
+              ? { type: 'streamable-http', url: 'https://mcp.example/mcp', ...config }
+              : config;
+          },
+        }),
+        getMCPConnectionState: store.getMCPConnectionState,
+        setMCPConnectionState: store.setMCPConnectionState,
+        getMCPManager: () => ({
+          ...deps.getMCPManager(),
+          getToolPublicationGeneration: () => undefined,
+        }),
+        reinitMCPServer: async (params) => {
+          const result = await deps.reinitMCPServer(params);
+          params.connectionObserver({
+            isConnected: async () => true,
+            usesOAuth: () => result?.oauthRequired === true,
+          });
+          return result;
+        },
+      })(req, res, next);
+    },
     MCPOAuthHandler: {
       initiateOAuthFlow: jest.fn(),
       getFlowState: jest.fn(),
@@ -111,6 +153,7 @@ jest.mock('@librechat/api', () => {
 });
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   getTenantId: jest.fn(),
   tenantStorage: {
     run: jest.fn((store, fn) => fn()),
@@ -2980,11 +3023,6 @@ describe('MCP Routes', () => {
     // mockRegistryInstance is defined at the top of the file
 
     it('rejects malformed operation IDs with 400 before resetting or connecting a transport', async () => {
-      const api = require('@librechat/api');
-      const implementation = api.runMCPConnectionAttempt.getMockImplementation();
-      api.runMCPConnectionAttempt.mockImplementation(
-        jest.requireActual('@librechat/api').runMCPConnectionAttempt,
-      );
       const manager = { disconnectUserConnection: jest.fn().mockResolvedValue(), mcpConfigs: {} };
       mockRegistryInstance.getServerConfig.mockResolvedValue({
         type: 'streamable-http',
@@ -2993,17 +3031,13 @@ describe('MCP Routes', () => {
       require('~/config').getMCPManager.mockReturnValue(manager);
       require('~/config').getFlowStateManager.mockReturnValue({});
       require('~/cache').getLogStores.mockReturnValue({});
-      try {
-        const response = await request(app)
-          .post('/api/mcp/server/reinitialize')
-          .send({ attemptId: 'invalid-operation' });
-        expect(response.status).toBe(400);
-        expect(response.body).toEqual({ error: 'Invalid MCP operation identifier' });
-        expect(manager.disconnectUserConnection).not.toHaveBeenCalled();
-        expect(require('~/server/services/Tools/mcp').reinitMCPServer).not.toHaveBeenCalled();
-      } finally {
-        api.runMCPConnectionAttempt.mockImplementation(implementation);
-      }
+      const response = await request(app)
+        .post('/api/mcp/server/reinitialize')
+        .send({ attemptId: 'invalid-operation' });
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ error: 'Invalid MCP operation identifier' });
+      expect(manager.disconnectUserConnection).not.toHaveBeenCalled();
+      expect(require('~/server/services/Tools/mcp').reinitMCPServer).not.toHaveBeenCalled();
     });
 
     it('should return 404 when server is not found in configuration', async () => {
@@ -3019,7 +3053,7 @@ describe('MCP Routes', () => {
       const response = await request(app).post('/api/mcp/non-existent-server/reinitialize');
 
       expect(response.status).toBe(404);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
         error: "MCP server 'non-existent-server' not found in configuration",
       });
     });
@@ -3053,7 +3087,7 @@ describe('MCP Routes', () => {
       const response = await request(app).post('/api/mcp/oauth-server/reinitialize');
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
         success: true,
         message: "MCP server 'oauth-server' ready for OAuth authentication",
         serverName: 'oauth-server',
@@ -3109,7 +3143,7 @@ describe('MCP Routes', () => {
       const response = await request(app).post('/api/mcp/test-server/reinitialize');
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
         success: false,
         message: "MCP server 'test-server' requires user-provided variables",
         serverName: 'test-server',
@@ -3136,7 +3170,7 @@ describe('MCP Routes', () => {
       const response = await request(app).post('/api/mcp/error-server/reinitialize');
 
       expect(response.status).toBe(500);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
         error: 'Failed to reinitialize MCP server for user',
       });
     });
@@ -3186,7 +3220,7 @@ describe('MCP Routes', () => {
       const response = await request(app).post('/api/mcp/test-server/reinitialize');
 
       expect(response.status).toBe(500);
-      expect(response.body).toEqual({ error: 'Internal server error' });
+      expect(response.body).toMatchObject({ error: 'Internal server error' });
     });
 
     it('should return 401 when user is not authenticated', async () => {
@@ -3201,7 +3235,7 @@ describe('MCP Routes', () => {
       const response = await request(unauthApp).post('/api/mcp/test-server/reinitialize');
 
       expect(response.status).toBe(401);
-      expect(response.body).toEqual({ error: 'User not authenticated' });
+      expect(response.body).toMatchObject({ error: 'User not authenticated' });
     });
 
     it('should successfully reinitialize server and cache tools', async () => {
@@ -3244,7 +3278,11 @@ describe('MCP Routes', () => {
       const response = await request(app).post('/api/mcp/test-server/reinitialize');
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
+        connectionAttempt: {
+          attemptId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          state: 'connected',
+        },
         success: true,
         message: "MCP server 'test-server' reinitialized successfully",
         serverName: 'test-server',
@@ -3277,19 +3315,23 @@ describe('MCP Routes', () => {
       mockRegistryInstance.getServerConfig.mockResolvedValue({
         endpoint: 'http://test-server.com',
         customUserVars: {
-          API_KEY: 'some-env-var',
+          API_KEY: { title: 'API key', description: 'Fixture key' },
         },
       });
       require('~/config').getMCPManager.mockReturnValue(mockMcpManager);
       require('~/config').getFlowStateManager.mockReturnValue({});
       require('~/cache').getLogStores.mockReturnValue({});
       require('@librechat/api').getUserMCPAuthMap.mockResolvedValue({
-        'mcp:test-server': {
+        'mcp_test-server': {
           API_KEY: 'api-key-value',
         },
       });
       require('~/models').findPluginAuthsByKeys.mockResolvedValue([
-        { key: 'API_KEY', value: 'api-key-value' },
+        {
+          pluginKey: 'mcp_test-server',
+          authField: 'API_KEY',
+          value: await jest.requireActual('@librechat/api').encryptCredential('api-key-value'),
+        },
       ]);
 
       const { getCachedTools, setCachedTools } = require('~/server/services/Config');
@@ -3310,10 +3352,9 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(require('@librechat/api').getUserMCPAuthMap).toHaveBeenCalledWith({
+      expect(require('~/models').findPluginAuthsByKeys).toHaveBeenCalledWith({
         userId: 'test-user-id',
-        servers: ['test-server'],
-        findPluginAuthsByKeys: require('~/models').findPluginAuthsByKeys,
+        pluginKeys: ['mcp_test-server'],
       });
     });
   });
@@ -3349,7 +3390,7 @@ describe('MCP Routes', () => {
       const response = await request(app).get('/api/mcp/connection/status');
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
         success: true,
         oauthTimeout: expect.any(Number),
         connectionStatus: {
@@ -3562,7 +3603,7 @@ describe('MCP Routes', () => {
       const response = await request(app).get('/api/mcp/connection/status/oauth-server');
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
         success: true,
         serverName: 'oauth-server',
         connectionStatus: 'requires_auth',
@@ -3591,7 +3632,7 @@ describe('MCP Routes', () => {
       const response = await request(app).get('/api/mcp/connection/status/oauth-server');
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({
+      expect(response.body).toMatchObject({
         success: true,
         serverName: 'oauth-server',
         connectionStatus: 'requires_auth',
