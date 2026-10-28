@@ -1455,18 +1455,21 @@ export class Chat {
   }
 
   /**
-   * Reports a stop whose end no attached stream will frame: one the run had already settled, or
-   * one the server could not save. The host reloads what the server kept. Returns whether it did.
+   * Reports a stop whose end no attached stream will frame: one the run had already settled, one
+   * the server could not save, or one it stopped and saved, whose abort frame no stream is left to
+   * carry. The host reloads what the server kept. Returns whether it did.
    */
   private publishUnframedStop(result: ChatAbortResult, generation: Generation): boolean {
     const settledAs = getSettledAs(result);
     const persistenceFailed = isStreamAbort(result) && result.persistenceFailed;
-    if (!settledAs && !persistenceFailed) {
+    const stopFramed = isStreamAbort(result) && !settledAs && !persistenceFailed;
+    if (!settledAs && !persistenceFailed && !stopFramed) {
       return false;
     }
     const outcome = getStopOutcome({
       settledAs,
       persistenceFailed,
+      stopFramed,
       stoppedConversationId: generation.stoppedConversationId,
     });
     /** A lost start still owed its own abort keeps the failure it reported. */
