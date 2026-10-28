@@ -2249,6 +2249,36 @@ describe('Chat sync snapshots and resume conflicts', () => {
     );
   });
 
+  it('(4) a pause a snapshot released and a status read restores after a drop keeps its decisions', async () => {
+    const approval = {
+      ...askAction,
+      payload: {
+        type: 'tool_approval',
+        action_requests: [{ tool_call_id: 'tool-1' }, { tool_call_id: 'tool-2' }],
+      },
+    } as unknown as Agents.PendingAction;
+    const h = createHarness();
+    h.chat.restorePendingAction(approval, 500);
+    await h.chat.addToolApprovalResponse({ id: 'tool-1', approved: true });
+    const stream = await reattached(h);
+    stream.push(snapshot({}));
+    await flush();
+    stream.push(dropEvent);
+    await flush();
+    h.chat.restorePendingAction(approval, 500);
+    await h.chat.addToolApprovalResponse({ id: 'tool-2', approved: true });
+
+    expect(h.transport.resume).toHaveBeenCalledTimes(1);
+    expect(h.transport.resume).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decisions: [
+          expect.objectContaining({ tool_call_id: 'tool-1' }),
+          expect.objectContaining({ tool_call_id: 'tool-2' }),
+        ],
+      }),
+    );
+  });
+
   it('(4) a sync snapshot names the response a later unframed end reports', async () => {
     const named: TMessage = { ...placeholder, messageId: 'response-9', text: 'Rebuilt' };
     const h = createHarness({
@@ -3043,5 +3073,78 @@ describe('Chat stop exits and the reload signal', () => {
       return;
     }
     expect(h.finishes[h.finishes.length - 1]).toMatchObject(expected.last);
+  });
+});
+
+describe('Chat lost starts across conversations and turns a retirement starts', () => {
+  it.each([
+    ['under `new`, which a retry in another conversation does not resolve', 'new', 'unaddressable'],
+    ['in a known conversation, which a retry the server takes there resolves', 'convo-1', 'idle'],
+  ])('a lost start %s', async (_label, id, after) => {
+    const h = createHarness({ id });
+    h.transport.sendMessages.mockRejectedValueOnce(networkError());
+    await h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    const retry = createStream({ streamId: 'convo-9', generationCreatedAt: 200 });
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream: retry });
+    const sent = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+    await flush();
+    retry.push({
+      type: 'sync',
+      data: { conversationId: 'convo-9', responseMessage: placeholder },
+    } as ChatEvent);
+    retry.push(finalEvent());
+    await sent;
+
+    expect((await h.chat.stop()).status).toBe(after);
+  });
+
+  it('leaves the chat to a turn the host starts while it selects the endpoint of a reattachment', async () => {
+    let started: Promise<void> | undefined;
+    const h = createHarness({
+      resumeSelection: () => {
+        started ??= h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        return { endpoint: 'agents' };
+      },
+    });
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+
+    await h.chat.resumeStream({ streamId: 'convo-1' });
+    await flush();
+
+    expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+    h.stream?.push(finalEvent());
+    await started;
+    expect(h.finishes).toHaveLength(1);
+  });
+
+  it('refuses a turn whose call retired an expired pause and let a subscriber start another', async () => {
+    const h = createHarness();
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+    h.chat.restorePendingAction({ ...askAction, expiresAt: Date.now() + 60_000 }, 500);
+    const later = Date.now() + 120_000;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(later);
+    let queued: Promise<void> | undefined;
+    let started = false;
+    const unsubscribe = h.chat.subscribe(() => {
+      if (!h.chat.pendingAction && !started) {
+        started = true;
+        queued = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Queued' }] });
+      }
+    });
+
+    try {
+      await expect(h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] })).rejects.toThrow(
+        'A turn is already in flight for this chat',
+      );
+    } finally {
+      now.mockRestore();
+      unsubscribe();
+    }
+    await flush();
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+    h.stream?.push(finalEvent());
+    await queued;
+    expect(h.finishes).toHaveLength(1);
   });
 });

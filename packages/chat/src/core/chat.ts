@@ -276,6 +276,11 @@ type ActiveRequest = {
   inheritedGeneration?: number;
   /** Set once the start was handed to the transport, so the server may be running it. */
   sent?: boolean;
+  /**
+   * The conversation the start was sent under. One sent under `new` created a conversation of its
+   * own, so no answer about another start or conversation resolves it if it is lost.
+   */
+  sentUnder?: string;
   /** Resolves once the request settled and released the chat. */
   finished: Promise<void>;
   finish: () => void;
@@ -986,6 +991,10 @@ export class Chat {
     /** The host's selection is read before any marker changes, so a throw leaves them all as they were. */
     const { endpoint: resolved, ...reattachOptions } = options;
     const selected = resolved ?? this.resumeEndpoint();
+    if (this.active || this.disposed) {
+      /** The host's selection may have started a turn or disposed the chat, which then owns it. */
+      return;
+    }
     /** A turn whose stream dropped: finding nothing running means it ended without this chat. */
     const dropped = this.detached;
     this.detached = undefined;
@@ -1062,8 +1071,8 @@ export class Chat {
         active.controller.signal,
         (opened) => opened?.close(),
       );
-      /** The server answered for the conversation, so a lost start is no longer the caller's. */
-      this.unaddressed = undefined;
+      /** The server answered for the conversation, so a lost start in it is no longer the caller's. */
+      this.releaseLostStart();
       if (!stream && generation.stopAnswered) {
         /** A stop still in flight decides how an empty reconnect ended. */
         await generation.stopAnswered;
@@ -1320,6 +1329,17 @@ export class Chat {
               error instanceof Error ? error : new Error(String(error)),
             ),
     );
+  }
+
+  /**
+   * Clears a lost start the server's answer for its conversation covers: one generation runs per
+   * conversation, so the answer owns or superseded it. A start sent under `new` created a
+   * conversation of its own, which no other answer covers, so it stays the caller's to stop.
+   */
+  private releaseLostStart(): void {
+    if (this.unaddressed?.sentUnder !== Constants.NEW_CONVO) {
+      this.unaddressed = undefined;
+    }
   }
 
   /**
@@ -1616,9 +1636,11 @@ export class Chat {
       }
       return;
     }
-    if (this.action?.actionId !== action.actionId) {
+    if (this.action?.actionId !== action.actionId && this.releasedPause !== action.actionId) {
+      /** A pause a snapshot released keeps its decisions when a read restores it, as a frame does. */
       this.decisions.clear();
     }
+    this.releasedPause = undefined;
     this.action = action;
     this.generationCreatedAt = generationCreatedAt;
     if (this.restored?.createdAt !== generationCreatedAt) {
@@ -1778,6 +1800,13 @@ export class Chat {
     if (this.action && isExpired(this.action) && this.resuming !== this.action.actionId) {
       /** An expired pause whose answer failed blocks nothing: the server refuses its resume. */
       this.clearAction();
+      /** A subscriber told the pause is gone may have disposed the chat or started its own turn. */
+      if (this.disposed) {
+        throw new Error('The chat was disposed');
+      }
+      if (this.active) {
+        throw new Error('A turn is already in flight for this chat');
+      }
     }
     if (this.action) {
       throw new Error('A paused generation is waiting for a decision; answer or stop it first');
@@ -1828,6 +1857,7 @@ export class Chat {
       active.generation.conversationId = prepared.payload.conversationId ?? undefined;
       const { signal } = active.controller;
       active.sent = true;
+      active.sentUnder = this.conversation;
       const result = await openUntilAborted(
         this.init.transport.sendMessages({
           ...options,
@@ -1861,8 +1891,8 @@ export class Chat {
        */
       const dropped = this.detached;
       this.detached = undefined;
-      /** Likewise a lost start stays the caller's to stop until the server takes this one. */
-      this.unaddressed = undefined;
+      /** Likewise a lost start stays the caller's to stop until the server takes one in its conversation. */
+      this.releaseLostStart();
       /**
        * And the old generation's resumed pauses stay stale until this start supersedes it; a start
        * the server attached to that same generation continues it, answered pauses included.
