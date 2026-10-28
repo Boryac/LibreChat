@@ -2871,3 +2871,177 @@ describe('Chat disposed while a confirmed stop ends its request', () => {
     },
   );
 });
+
+/**
+ * Every way a stop ends a request, and whether the host is asked to reload (`isSettled`). The rule:
+ * a stop the server confirmed reloads whenever no terminal frame delivered what it saved; a frame
+ * that did deliver it, a stop the server never answered, and a stop it refused do not.
+ */
+type StopExit = {
+  /** The last finish, or `null` when the exit must not finish the turn. */
+  last: Partial<
+    Pick<ChatFinishResult, 'isAbort' | 'isDisconnect' | 'isError' | 'isSettled'>
+  > | null;
+  /** The stop's own result: `ok`, `unaddressable`, or a rejection message fragment. */
+  outcome: string;
+};
+
+const stopExits: Array<[string, (h: Harness) => Promise<void>, StopExit]> = [
+  [
+    'live: the abort frame delivers the saved response',
+    async (h) => {
+      await states.attached(h);
+      await events.stop(h);
+    },
+    { last: aborted, outcome: 'ok' },
+  ],
+  [
+    'live: the stream drops before the abort frame',
+    async (h) => {
+      await states.attached(h);
+      h.transport.abort.mockImplementation(async () => {
+        h.stream?.push(dropEvent);
+        return { success: true };
+      });
+      await events.stop(h);
+    },
+    { last: stoppedUnframed, outcome: 'ok' },
+  ],
+  [
+    'live: the server could not save the stop, and its reconcile frame says so',
+    async (h) => {
+      await states.attached(h);
+      await events.unsavedStop(h);
+    },
+    { last: unsaved, outcome: 'ok' },
+  ],
+  [
+    'live: the run had already settled on its own',
+    async (h) => {
+      await states.attached(h);
+      await events.settledStop(h);
+    },
+    { last: settled, outcome: 'ok' },
+  ],
+  [
+    'live: the server no longer knows the run (404)',
+    async (h) => {
+      await states.attached(h);
+      await events.goneStop(h);
+    },
+    { last: settled, outcome: 'ok' },
+  ],
+  [
+    'reattaching: the stop is confirmed before the stream opens',
+    async (h) => {
+      await states.reattaching(h);
+      await events.stop(h);
+    },
+    { last: stoppedUnframed, outcome: 'ok' },
+  ],
+  [
+    'empty reconnect: the reconnect finds nothing after the stop was confirmed',
+    async (h) => {
+      await states.detached(h);
+      let opened: ((stream: null) => void) | undefined;
+      h.transport.reconnectToStream.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            opened = resolve;
+          }),
+      );
+      let answer: (() => void) | undefined;
+      h.transport.abort.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            answer = () => resolve({ success: true });
+          }),
+      );
+      const resumed = h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      await flush();
+      const stopping = record(h, h.chat.stop());
+      await flush();
+      opened?.(null);
+      await flush();
+      answer?.();
+      await stopping;
+      await resumed.catch(() => undefined);
+      await flush();
+    },
+    { last: stoppedUnframed, outcome: 'ok' },
+  ],
+  [
+    'detached: the dropped generation is stopped',
+    async (h) => {
+      await states.detached(h);
+      await events.stop(h);
+    },
+    { last: stoppedUnframed, outcome: 'ok' },
+  ],
+  [
+    'detached: the dropped generation had already settled',
+    async (h) => {
+      await states.detached(h);
+      await events.settledStop(h);
+    },
+    { last: settled, outcome: 'ok' },
+  ],
+  [
+    'restored pause: the pause a status read restored is stopped',
+    async (h) => {
+      await states.restored(h);
+      await events.stop(h);
+    },
+    { last: stoppedUnframed, outcome: 'ok' },
+  ],
+  [
+    'never answered: the start lost its response, so the stop cannot name it',
+    async (h) => {
+      await states.starting(h);
+      await events.stop(h);
+    },
+    { last: dropped, outcome: 'unaddressable' },
+  ],
+  [
+    'never sent: the turn is stopped while the host still prepares it',
+    async (h) => {
+      await states.preparing(h);
+      await events.stop(h);
+      h.open?.();
+      await flush();
+    },
+    { last: aborted, outcome: 'ok' },
+  ],
+  [
+    'network drop: the stop request itself fails, so the run is left streaming',
+    async (h) => {
+      await states.attached(h);
+      h.transport.abort.mockRejectedValue(networkError());
+      await events.stop(h);
+    },
+    { last: null, outcome: 'Network Error' },
+  ],
+  [
+    'refused: the server answers the stop without stopping the run',
+    async (h) => {
+      await states.attached(h);
+      h.transport.abort.mockResolvedValue({ success: false, error: 'The stop was refused' });
+      await events.stop(h);
+    },
+    { last: null, outcome: 'The stop was refused' },
+  ],
+];
+
+describe('Chat stop exits and the reload signal', () => {
+  it.each(stopExits)('%s', async (_exit, drive, expected) => {
+    const h = createHarness();
+    await drive(h);
+
+    expect(h.outcome).toContain(expected.outcome);
+    if (expected.last === null) {
+      expect(h.finishes).toHaveLength(0);
+      return;
+    }
+    expect(h.finishes[h.finishes.length - 1]).toMatchObject(expected.last);
+  });
+});
