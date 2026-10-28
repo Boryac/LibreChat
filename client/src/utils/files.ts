@@ -1,18 +1,9 @@
 import {
-  TextPaths,
-  FilePaths,
-  CodePaths,
-  AudioPaths,
-  VideoPaths,
-  SheetPaths,
-} from '@librechat/client';
-import {
   Tools,
   megabyte,
   Providers,
   QueryKeys,
   inferMimeType,
-  excelMimeTypes,
   EToolResources,
   EModelEndpoint,
   retrievalMimeTypes,
@@ -34,8 +25,6 @@ import type {
 import type { QueryClient } from '@tanstack/react-query';
 import type { ExtendedFile } from '~/common';
 
-export const partialTypes = ['text/x-'];
-
 /** Text-routed images use the file action so their extracted preview is reachable. */
 export function usesImagePreview(file: Partial<Pick<TFile, 'type' | 'llmDeliveryPath'>>): boolean {
   return file.type?.startsWith('image/') === true && file.llmDeliveryPath !== 'text';
@@ -52,102 +41,6 @@ export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
   }
   return false;
 }
-
-const textDocument = {
-  paths: TextPaths,
-  fillClassName: 'fill-file-document',
-  title: 'Document',
-};
-
-const spreadsheet = {
-  paths: SheetPaths,
-  fillClassName: 'fill-file-sheet',
-  title: 'Spreadsheet',
-};
-
-const codeFile = {
-  paths: CodePaths,
-  fillClassName: 'fill-file-code',
-  // TODO: make this dynamic to the language
-  title: 'Code',
-};
-
-const artifact = {
-  paths: CodePaths,
-  fillClassName: 'fill-file-artifact',
-  title: 'Code',
-};
-
-const audioFile = {
-  paths: AudioPaths,
-  fillClassName: 'fill-file-audio',
-  title: 'Audio',
-};
-
-const videoFile = {
-  paths: VideoPaths,
-  fillClassName: 'fill-file-video',
-  title: 'Video',
-};
-
-export const fileTypes = {
-  /* Category matches */
-  file: {
-    paths: FilePaths,
-    fillClassName: 'fill-file-generic',
-    title: 'File',
-  },
-  text: textDocument,
-  txt: textDocument,
-  audio: audioFile,
-  video: videoFile,
-  // application:,
-
-  /* Partial matches */
-  csv: spreadsheet,
-  'application/pdf': textDocument,
-  pdf: textDocument,
-  'text/x-': codeFile,
-  artifact: artifact,
-
-  /* Exact matches */
-  // 'application/json':,
-  // 'text/html':,
-  // 'text/css':,
-  // image,
-};
-
-export const getFileType = (
-  type = '',
-): {
-  paths: React.FC;
-  fillClassName: string;
-  title: string;
-} => {
-  // Direct match check
-  if (fileTypes[type]) {
-    return fileTypes[type];
-  }
-
-  if (excelMimeTypes.test(type)) {
-    return spreadsheet;
-  }
-
-  // Partial match check
-  const partialMatch = partialTypes.find((partial) => type.includes(partial));
-  if (partialMatch && fileTypes[partialMatch]) {
-    return fileTypes[partialMatch];
-  }
-
-  // Category check
-  const category = type.split('/')[0] || 'text';
-  if (fileTypes[category]) {
-    return fileTypes[category];
-  }
-
-  // Default file type
-  return fileTypes.file;
-};
 
 /**
  * Format a date string to a human readable format

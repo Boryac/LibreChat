@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
@@ -5,9 +8,8 @@ import '@testing-library/jest-dom';
 import type { TFile } from 'librechat-data-provider';
 import FileContainer from '../FileContainer';
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-  getFileType: () => ({ paths: [], color: '', title: 'Plain' }),
+jest.mock('../kinds', () => ({
+  getFileType: () => ({ paths: () => null, fillClassName: '', title: 'Plain' }),
 }));
 
 jest.mock('../FilePreview', () => ({

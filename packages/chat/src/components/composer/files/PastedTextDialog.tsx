@@ -2,14 +2,24 @@ import { useId, useState } from 'react';
 import {
   Button,
   OGDialog,
+  useLocalize,
   Textarea,
   OGDialogClose,
   OGDialogTitle,
   OGDialogHeader,
   OGDialogContent,
 } from '@librechat/client';
-import type { PastedTextEdit } from '~/hooks/Files/usePastedTextEdit';
-import { useLocalize } from '~/hooks';
+import type { ExtendedFile } from '../../../core/files';
+
+/** The attachment being edited, with its text already resolved so the dialog stays controlled. */
+export type PastedTextEdit = {
+  file: ExtendedFile;
+  text: string;
+  /** The composer the dialog was opened in; an edit must never apply to a different one. */
+  conversationId: string | null;
+  /** Distinguishes two successive unsaved chats, which share the `new` conversation id. */
+  draftToken: symbol;
+};
 
 /**
  * Opens the text behind a `pasted-text.txt` chip so it can be corrected before sending. Returning
@@ -24,7 +34,7 @@ export default function PastedTextDialog({
   edit: PastedTextEdit | null;
   onClose: () => void;
   onSave: (text: string) => void;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   const fieldId = useId();
   const [text, setText] = useState('');

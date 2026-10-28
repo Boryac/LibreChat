@@ -17,7 +17,7 @@ const collectSourceModules = (directory: string): string[] =>
 const composerModules = [
   ...collectSourceModules(composerRoot),
   ...collectSourceModules(
-    join(__dirname, '../../../../../../../packages/chat/src/components/composer'),
+    join(__dirname, '../../../../../../../packages/chat/src/components/composer/bar'),
   ),
 ];
 

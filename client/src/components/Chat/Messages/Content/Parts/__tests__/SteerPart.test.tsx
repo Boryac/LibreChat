@@ -37,9 +37,9 @@ jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
   default: ({ content }: { content: string }) => <span>{content}</span>,
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
-  __esModule: true,
-  default: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  FileContainer: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
     <button type="button" data-testid="steer-file" onClick={onClick}>
       {file.filename}
     </button>

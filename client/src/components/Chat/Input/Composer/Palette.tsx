@@ -12,6 +12,7 @@ import * as Ariakit from '@ariakit/react';
 import { AutoSizer, List } from 'react-virtualized';
 import { composerLiftFamily } from '@librechat/chat/react';
 import { Star, Plus, Search, ChevronDown } from 'lucide-react';
+import { FilePreview, getFileType } from '@librechat/chat/components';
 import { Button, FileUpload, IconButton, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type {
   TFile,
@@ -24,15 +25,14 @@ import type { AttachEntry } from '~/hooks/Input/useAttachItems';
 import type { ExtendedFile, FileSetter } from '~/common';
 import type { CatalogSection } from './Catalog';
 import type { TranslationKeys } from '~/hooks';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { SharePointPickerDialog } from '~/components/SharePoint';
 import useReducedMotion from '~/hooks/Generic/useReducedMotion';
-import { getFileType, isUnifiedUploadMode, cn } from '~/utils';
 import useToolFavorites from '~/hooks/Input/useToolFavorites';
 import useElementSize from '~/hooks/Generic/useElementSize';
 import useRecentFiles from '~/hooks/Input/useRecentFiles';
 import useAttachItems from '~/hooks/Input/useAttachItems';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
+import { isUnifiedUploadMode, cn } from '~/utils';
 import { isMacPlatform } from '~/utils/shortcuts';
 import { useBadgeRowContext } from '~/Providers';
 import { useLocalize } from '~/hooks';

@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Button } from '@librechat/client';
 import { Maximize2, X } from 'lucide-react';
 import { FileSources } from 'librechat-data-provider';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
+import { cn, Button, useLocalize } from '@librechat/client';
 import ProgressCircle from './ProgressCircle';
 import SourceIcon from './SourceIcon';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 type styleProps = {
   backgroundImage?: string;
@@ -29,7 +27,7 @@ const ImagePreview = ({
   className?: string;
   source?: FileSources;
   alt?: string;
-}) => {
+}): React.JSX.Element | null => {
   const localize = useLocalize();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);

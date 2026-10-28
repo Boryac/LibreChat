@@ -151,3 +151,5 @@ export type {
 export { boundIntentLabel, getToolCallIntent, useToolCallIntent } from './react/parts/intent';
 export { default as useFollowScroll } from './react/parts/useFollowScroll';
 export { default as useRowHandoff } from './react/parts/handoff';
+export { useFilesHost, FilesHostProvider } from './react/files';
+export type { FilesHost } from './react/files';

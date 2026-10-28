@@ -1,11 +1,12 @@
 import { memo } from 'react';
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
 
 interface DragDropOverlayProps {
   isActive: boolean;
 }
 
-const DragDropOverlay = memo(({ isActive }: DragDropOverlayProps) => {
+const DragDropOverlay: NamedExoticComponent<DragDropOverlayProps> = memo(({ isActive }) => {
   const localize = useLocalize();
   return (
     <>

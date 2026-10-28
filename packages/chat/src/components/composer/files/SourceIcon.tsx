@@ -1,14 +1,14 @@
+import { cn } from '@librechat/client';
 import { Terminal, Type, Database } from 'lucide-react';
 import { EModelEndpoint, FileSources } from 'librechat-data-provider';
-import { MinimalIcon } from '~/components/Endpoints';
-import { cn } from '~/utils';
+import { useFilesHost } from '../../../react/files';
 
-const sourceToEndpoint = {
+const sourceToEndpoint: Partial<Record<string, EModelEndpoint>> = {
   [FileSources.openai]: EModelEndpoint.openAI,
   [FileSources.azure]: EModelEndpoint.azureOpenAI,
 };
 
-const sourceToClassname = {
+const sourceToClassname: Partial<Record<string, string>> = {
   [FileSources.openai]: 'bg-white/75 dark:bg-black/65',
   [FileSources.azure]: 'azure-bg-color',
   [FileSources.azure_blob]: 'azure-bg-color',
@@ -31,7 +31,8 @@ export default function SourceIcon({
   source?: FileSources;
   isCodeFile?: boolean;
   className?: string;
-}) {
+}): React.JSX.Element | null {
+  const { renderEndpointIcon } = useFilesHost();
   if (isCodeFile === true) {
     return (
       <div className={cn(className, sourceToClassname[FileSources.execute_code] ?? '')}>
@@ -69,14 +70,7 @@ export default function SourceIcon({
   }
   return (
     <div className={cn(className, sourceToClassname[source ?? ''] ?? '')}>
-      <span className="flex items-center justify-center">
-        <MinimalIcon
-          endpoint={endpoint}
-          size={14}
-          isCreatedByUser={false}
-          iconClassName="h-3 w-3"
-        />
-      </span>
+      <span className="flex items-center justify-center">{renderEndpointIcon(endpoint)}</span>
     </div>
   );
 }

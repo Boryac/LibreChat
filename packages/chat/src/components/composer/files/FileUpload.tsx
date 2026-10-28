@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { FileUp } from 'lucide-react';
-import { Button } from '@librechat/client';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils/';
+import { cn, Button, useLocalize } from '@librechat/client';
 
 type FileUploadProps = {
   onFileSelected: (jsonData: Record<string, unknown>) => void;

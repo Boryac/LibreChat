@@ -1,12 +1,16 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import type { PastedTextEdit } from '~/hooks/Files/usePastedTextEdit';
-import type { ExtendedFile } from '~/common';
+import type { ExtendedFile } from '../../../../core/files';
+import type { PastedTextEdit } from '../PastedTextDialog';
 import PastedTextDialog from '../PastedTextDialog';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 

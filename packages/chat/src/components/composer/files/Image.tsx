@@ -18,7 +18,7 @@ const Image = ({
   source?: FileSources;
   removeLabel?: string;
   removeDisabled?: boolean;
-}) => {
+}): React.JSX.Element => {
   return (
     <div className="group text-text-secondary relative inline-block text-sm">
       {/* `flex`, so the button inside is not laid out on a text baseline: the

@@ -1,8 +1,9 @@
+import { cn } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { ExtendedFile } from '~/common';
-import { getFileType, cn } from '~/utils';
+import type { ExtendedFile } from '../../../core/files';
 import FilePreview from './FilePreview';
+import { getFileType } from './kinds';
 import RemoveFile from './RemoveFile';
 
 /** A second action offered in place of the subtitle, stated on the chip rather than revealed on hover. */
@@ -62,7 +63,7 @@ const FileContainer = ({
   removeLabel?: string;
   removeDisabled?: boolean;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
-}) => {
+}): React.JSX.Element => {
   const fileType = getFileType(overrideType ?? file.type);
   const visibleName = displayName ?? file.filename ?? '';
   const interactive = onClick != null;

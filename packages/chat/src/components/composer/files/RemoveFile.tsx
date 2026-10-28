@@ -1,4 +1,4 @@
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
 
 export default function RemoveFile({
   onRemove,
@@ -9,7 +9,7 @@ export default function RemoveFile({
   disabled?: boolean;
   /** Names the file, where several chips sit side by side and "Remove file" would not say which. */
   label?: string;
-}) {
+}): React.JSX.Element {
   const localize = useLocalize();
   return (
     <button
