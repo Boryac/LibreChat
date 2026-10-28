@@ -1,8 +1,8 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
+import { SoleToolContext, GeneratedToolLabelContext } from '../../disclosure';
 import FileAuthoringCall from '../FileAuthoringCall';
-import { SoleToolContext } from '../../disclosure';
 import ReadFileCall from '../ReadFileCall';
 import MemoryCall from '../MemoryCall';
 import SkillCall from '../SkillCall';
@@ -136,5 +136,32 @@ describe('a sole call keeps its row when its panel would be empty', () => {
       />,
     );
     expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+  });
+});
+
+describe('generated title replaces a completed descriptive row', () => {
+  it.each(['read', 'skill'])('shows the %s panel without a second header', (kind) => {
+    renderSole(
+      <GeneratedToolLabelContext.Provider value>
+        {kind === 'read' ? (
+          <ReadFileCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ intent: 'Read config', path: 'src/config.ts' }}
+            output="config contents"
+            runStepStatus="completed"
+          />
+        ) : (
+          <SkillCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ skillName: 'pdf' }}
+            output="loaded skill"
+            runStepStatus="completed"
+          />
+        )}
+      </GeneratedToolLabelContext.Provider>,
+    );
+    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
   });
 });
