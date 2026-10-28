@@ -2546,6 +2546,10 @@ export class Chat {
     let selection: ReturnType<NonNullable<ChatInit['resumeSelection']>> | undefined;
     try {
       selection = this.init.resumeSelection?.();
+      if (this.disposed) {
+        /** The host's selection disposed the chat, which then sends no answer for it. */
+        throw new Error('The chat was disposed');
+      }
       /** Disposal releases the submit; a late answer then finds nothing to change. */
       const result = await untilAborted(
         resume.call(this.init.transport, {

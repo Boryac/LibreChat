@@ -3550,6 +3550,21 @@ describe('Chat notify ordering and request ownership', () => {
     expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
   });
 
+  it('an answer sends nothing when the host disposes the chat while it selects the endpoint', async () => {
+    const h = createHarness({
+      resumeSelection: () => {
+        h.chat.dispose();
+        return { endpoint: 'agents' };
+      },
+    });
+    h.chat.restorePendingAction(askAction, 500);
+
+    await expect(h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' })).rejects.toThrow(
+      'disposed',
+    );
+    expect(h.transport.resume).not.toHaveBeenCalled();
+  });
+
   it('a reattachment owns the chat before it clears a pause it supersedes', async () => {
     const h = createHarness();
     h.chat.restorePendingAction(askAction, 500);
