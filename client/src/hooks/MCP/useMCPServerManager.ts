@@ -1,5 +1,5 @@
 import { useCallback, useState, useMemo, useRef, useEffect } from 'react';
-import { useAtom } from 'jotai';
+import { useAtom, useStore } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -7,6 +7,7 @@ import {
   dataService,
   QueryKeys,
   MCPOptions,
+  getClientLimit,
   Permissions,
   ResourceType,
   PermissionTypes,
@@ -43,8 +44,8 @@ import {
   useCatalogReady,
   useMCPConnectionStatus,
 } from '~/hooks';
+import { mcpConnectionResultsAtom, mcpServerInitStatesAtom, getServerInitState } from '~/store/mcp';
 import { useGetStartupConfig, useMCPServersQuery, useMCPToolsQuery } from '~/data-provider';
-import { mcpServerInitStatesAtom, getServerInitState } from '~/store/mcp';
 import { getMCPReinitializeErrorMessage } from './errors';
 import { openInNewTab } from '~/utils';
 
@@ -224,6 +225,8 @@ export function useMCPServerManager({
 
   // Global atom for init states - shared across all useMCPServerManager instances
   // This enables canceling OAuth from both chat dropdown and settings panel
+  const connectionStore = useStore();
+  const [, setConnectionResults] = useAtom(mcpConnectionResultsAtom);
   const [serverInitStates, setServerInitStates] = useAtom(mcpServerInitStatesAtom);
 
   // Poll intervals are kept local (not serializable)
@@ -512,8 +515,78 @@ export function useMCPServerManager({
       /** connectionDeferred is reset up front so a stale value from a previous
        * attempt can never be mistaken for this attempt's outcome. */
       updateServerInitState(serverName, { isInitializing: true, connectionDeferred: false });
+      const requestId = crypto.randomUUID();
+      const requestedAt = Date.now();
+      const previous = queryClient.getQueryData<MCPConnectionStatusResponse>([
+        QueryKeys.mcpConnectionStatus,
+      ])?.connectionStatus[serverName];
+      const previousAttemptId = previous?.connectionAttempt?.attemptId;
+      const publishResult = (
+        status: MCPConnectionStatusResponse['connectionStatus'][string],
+        pending = false,
+      ) => {
+        setConnectionResults((current) => ({
+          ...current,
+          [serverName]: {
+            status,
+            receivedAt: Date.now(),
+            previousAttemptId,
+            pending,
+            requestId,
+          },
+        }));
+      };
+      publishResult(
+        {
+          ...previous,
+          requiresOAuth: previous?.requiresOAuth ?? false,
+          connectionState: 'connecting',
+          connectionAttempt: {
+            attemptId: requestId,
+            state: 'connecting',
+            remainingMs: getClientLimit('mcpConnectMs'),
+          },
+          statusUnavailable: false,
+        },
+        true,
+      );
       try {
-        const response = await reinitializeServer(serverName);
+        await queryClient.cancelQueries([QueryKeys.mcpConnectionStatus]);
+        const response = await reinitializeServer({ serverName, attemptId: requestId });
+        await queryClient.cancelQueries([QueryKeys.mcpConnectionStatus]);
+        if (connectionStore.get(mcpConnectionResultsAtom)[serverName]?.requestId !== requestId)
+          return;
+        if (!response.oauthRequired && !response.connectionDeferred) {
+          const outcomeState = response.success ? 'connected' : 'error';
+          publishResult({
+            ...previous,
+            requiresOAuth: previous?.requiresOAuth ?? false,
+            authorizationGeneration:
+              response.connectionAttempt?.authorizationGeneration ??
+              previous?.authorizationGeneration,
+            connectionState: response.statusUnavailable ? 'disconnected' : outcomeState,
+            connectionAttempt: response.connectionAttempt
+              ? {
+                  ...response.connectionAttempt,
+                  remainingMs: Math.max(
+                    0,
+                    response.connectionAttempt.remainingMs - (Date.now() - requestedAt),
+                  ),
+                }
+              : {
+                  attemptId: requestId,
+                  state: response.success ? 'connected' : 'error',
+                  remainingMs: 0,
+                },
+            statusUnavailable: response.statusUnavailable === true,
+          });
+        } else {
+          setConnectionResults((current) => {
+            const next = { ...current };
+            delete next[serverName];
+            return next;
+          });
+        }
         /** Record whether this attempt deferred to a chat turn (request-scoped
          * server) so consumers that didn't await this call (e.g. the agent
          * builder behind the customUserVars config dialog) can react to it. */
@@ -561,9 +634,28 @@ export function useMCPServerManager({
         }
         return response;
       } catch (error) {
+        if (connectionStore.get(mcpConnectionResultsAtom)[serverName]?.requestId !== requestId)
+          return;
+        const deliveryUncertain =
+          error != null &&
+          typeof error === 'object' &&
+          'code' in error &&
+          (error.code === 'ECONNABORTED' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ERR_NETWORK' ||
+            error.code === 'ERR_CANCELED');
+        publishResult({
+          ...previous,
+          requiresOAuth: previous?.requiresOAuth ?? false,
+          connectionState: deliveryUncertain ? 'disconnected' : 'error',
+          connectionAttempt: { attemptId: requestId, state: 'error', remainingMs: 0 },
+          statusUnavailable: deliveryUncertain,
+        });
         console.error(`[MCP Manager] Failed to initialize ${serverName}:`, error);
         showToast({
-          message: localize('com_ui_mcp_init_failed', { 0: serverName }),
+          message: deliveryUncertain
+            ? localize('com_ui_mcp_status_unavailable')
+            : localize('com_ui_mcp_init_failed', { 0: serverName }),
           status: 'error',
         });
         cleanupServerState(serverName);
@@ -575,6 +667,8 @@ export function useMCPServerManager({
     },
     [
       updateServerInitState,
+      setConnectionResults,
+      connectionStore,
       reinitializeServer,
       startServerPolling,
       queryClient,

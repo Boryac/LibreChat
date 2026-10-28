@@ -40,4 +40,15 @@ describe('MCPStatusBadge', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent('com_nav_mcp_status_connecting');
   });
+  it('keeps expired verification neutral while OAuth authorization remains valid', () => {
+    const status: MCPServerStatus = {
+      requiresOAuth: true,
+      connectionState: 'disconnected',
+      authorizationState: 'authorized',
+      statusUnavailable: true,
+    };
+    render(<MCPStatusBadge serverStatus={status} />);
+    expect(screen.getByRole('status')).toHaveTextContent('com_nav_mcp_status_unknown');
+    expect(getStatusDotColor(status)).toBe('bg-status-neutral');
+  });
 });

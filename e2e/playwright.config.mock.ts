@@ -259,9 +259,10 @@ function writeRuntimeMockConfig() {
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
   if (process.env.E2E_MCP_CONNECTION_STATUS === 'true') {
+    config += '\nclientLimits:\n  mcpConnectMs: 6500\n';
     config = config.replace(
       'mcpSettings:\n',
-      'mcpSettings:\n  connectionStatus:\n    attemptTimeoutMs: 3000\n    leaseDurationMs: 3000\n    failureRetentionMs: 60000\n',
+      'mcpSettings:\n  connectionStatus:\n    attemptTimeoutMs: 3000\n    evidenceFreshnessMs: 3000\n    resultRetentionMs: 60000\n',
     );
     config = config.replace(
       '  allowedDomains:\n',

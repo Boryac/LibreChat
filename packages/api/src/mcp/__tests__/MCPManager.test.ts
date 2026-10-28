@@ -5749,10 +5749,7 @@ describe('MCPManager', () => {
       mockAppConnections(appConnections);
       (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(nonOboConfig);
 
-      const observed = jest.fn(async () => undefined);
-      const manager = await MCPManager.createInstance(newMCPServersConfig(), {
-        onConnectionReady: observed,
-      });
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
       const getUserConnectionSpy = jest.spyOn(manager, 'getUserConnection');
 
       const connection = await manager.getConnection({
@@ -5765,20 +5762,6 @@ describe('MCPManager', () => {
         expectedConfig: nonOboConfig,
       });
       expect(getUserConnectionSpy).not.toHaveBeenCalled();
-      expect(observed).toHaveBeenCalledWith(
-        expect.objectContaining({
-          connection: appConnection,
-          userId: mockUser.id,
-          serverConfig: nonOboConfig,
-          created: true,
-        }),
-      );
-      await manager.getConnection({
-        serverName,
-        user: mockUser as IUser,
-        connectionStatusManagedExternally: true,
-      });
-      expect(observed).toHaveBeenCalledTimes(1);
     });
 
     it('uses a profile-separated user session for Apps on an operator server', async () => {

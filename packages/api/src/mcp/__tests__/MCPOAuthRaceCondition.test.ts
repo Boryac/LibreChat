@@ -14,7 +14,6 @@ import type { OAuthTestServer } from './helpers/oauthTestServer';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { MCPTokenStorage, MCPOAuthHandler, ReauthenticationRequiredError } from '~/mcp/oauth';
 import { MockKeyv, createOAuthMCPServer } from './helpers/oauthTestServer';
-import { setMCPToolsChangedGenerationHandler } from '~/mcp/toolsChanged';
 import { OAuthLifecycleRelay } from '~/mcp/oauth/pending';
 import { FlowStateManager } from '~/flow/manager';
 
@@ -104,9 +103,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
         }
       }
 
-      const observed = jest.fn(async () => undefined);
-      const manager = new TestManager(observed);
-      setMCPToolsChangedGenerationHandler(async () => 'observer-generation');
+      const manager = new TestManager();
 
       const mockConnection = {
         on: jest.fn(),
@@ -177,17 +174,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
         expect(conn2).toBe(conn3);
         expect(createSpy).toHaveBeenCalledTimes(1);
         expect(manager.createCallCount).toBe(1);
-        expect(observed).toHaveBeenCalledWith(
-          expect.objectContaining({ connection: conn1, created: true }),
-        );
-        await manager.getUserConnection(opts);
-        expect(observed).toHaveBeenLastCalledWith(
-          expect.objectContaining({ connection: conn1, created: false }),
-        );
-        await manager.getUserConnection({ ...opts, connectionStatusManagedExternally: true });
-        expect(observed).toHaveBeenCalledTimes(2);
       } finally {
-        setMCPToolsChangedGenerationHandler(null);
         createSpy.mockRestore();
         registrySpy.mockRestore();
       }

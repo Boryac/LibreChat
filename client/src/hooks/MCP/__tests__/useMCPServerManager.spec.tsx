@@ -1,10 +1,11 @@
 import React from 'react';
-import { Provider } from 'jotai';
+import { Provider, createStore } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import type { MCPServersResponse, MCPReinitializeResponse } from 'librechat-data-provider';
 import { useMCPServerManager } from '../useMCPServerManager';
+import { mcpConnectionResultsAtom } from '~/store/mcp';
 
 const mockOpenInNewTab = jest.fn();
 jest.mock('~/utils', () => ({ openInNewTab: (...args: unknown[]) => mockOpenInNewTab(...args) }));
@@ -116,6 +117,75 @@ describe('useMCPServerManager initialization', () => {
       }
     },
   );
+
+  it('keeps the newer action when two surfaces receive responses out of order', async () => {
+    mockReinitialize.mockReset();
+    mockSetMCPValues.mockClear();
+    mockShowToast.mockClear();
+    const first = deferred<MCPReinitializeResponse>();
+    const second = deferred<MCPReinitializeResponse>();
+    mockReinitialize.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const state = createStore();
+    const queryClient = new QueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={state}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </Provider>
+    );
+    const { result, unmount } = renderHook(
+      () => ({ first: useMCPServerManager(), second: useMCPServerManager() }),
+      { wrapper },
+    );
+    act(() => {
+      void result.current.first.initializeServer('test-server');
+      void result.current.second.initializeServer('test-server');
+    });
+    await act(async () => {
+      second.resolve({ success: false, message: 'Failed', serverName: 'test-server' });
+    });
+    await act(async () => {
+      first.resolve({ success: true, message: 'Connected', serverName: 'test-server' });
+    });
+    expect(state.get(mcpConnectionResultsAtom)['test-server'].status.connectionState).toBe('error');
+    expect(mockSetMCPValues).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledTimes(1);
+    unmount();
+    queryClient.clear();
+  });
+
+  it('renders publication uncertainty without claiming the healthy transport failed', async () => {
+    mockReinitialize.mockReset();
+    mockSetMCPValues.mockClear();
+    mockShowToast.mockClear();
+    mockReinitialize.mockResolvedValue({
+      success: false,
+      statusUnavailable: true,
+      failureReason: 'status_unavailable',
+      serverName: 'test-server',
+    });
+    const state = createStore();
+    const queryClient = new QueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={state}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </Provider>
+    );
+    const { result, unmount } = renderHook(() => useMCPServerManager(), { wrapper });
+    await act(async () => {
+      await result.current.initializeServer('test-server');
+    });
+    expect(state.get(mcpConnectionResultsAtom)['test-server'].status).toMatchObject({
+      connectionState: 'disconnected',
+      statusUnavailable: true,
+    });
+    expect(mockSetMCPValues).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_mcp_status_unavailable',
+      status: 'error',
+    });
+    unmount();
+    queryClient.clear();
+  });
 
   it('keeps passive authorization observers opt-in for shared hook callers', () => {
     const queryClient = new QueryClient();

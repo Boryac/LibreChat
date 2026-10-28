@@ -6,6 +6,8 @@ export function getMCPReinitializeErrorMessage(
   localize: LocalizeFunction,
 ): string {
   switch (response.failureReason) {
+    case 'status_unavailable':
+      return localize('com_ui_mcp_status_unavailable');
     case 'unreachable':
       return localize('com_ui_mcp_server_connection_failed');
     case 'missing_custom_user_vars':

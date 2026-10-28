@@ -4,7 +4,7 @@ import type {
   UseMutationResult,
   QueryObserverResult,
 } from '@tanstack/react-query';
-import type { MCPReinitializeResponse } from '../types/mcpServers';
+import type { MCPReinitializeResponse, MCPReinitializeRequest } from '../types/mcpServers';
 import { Constants, initialModelsConfig } from '../config';
 import { defaultOrderQuery } from '../types/assistants';
 import * as permissions from '../accessPermissions';
@@ -296,11 +296,11 @@ export const useUpdateUserPluginsMutation = (
 export const useReinitializeMCPServerMutation = (): UseMutationResult<
   MCPReinitializeResponse,
   unknown,
-  string,
+  MCPReinitializeRequest,
   unknown
 > => {
   const queryClient = useQueryClient();
-  return useMutation((serverName: string) => dataService.reinitializeMCPServer(serverName), {
+  return useMutation((input: MCPReinitializeRequest) => dataService.reinitializeMCPServer(input), {
     onSuccess: () => {
       queryClient.invalidateQueries([QueryKeys.mcpTools]);
     },

@@ -12,6 +12,9 @@ describe('client timeouts', () => {
 
   it('uses the defaults until the startup config sets values', () => {
     expect(getClientLimit('refreshMs')).toBe(DEFAULT_CLIENT_LIMITS.refreshMs);
+    expect(getClientLimit('mcpConnectMs')).toBe(75_000);
+    setClientLimits({ mcpConnectMs: 125_000 });
+    expect(getClientLimit('mcpConnectMs')).toBe(125_000);
     setClientLimits({ refreshMs: 90_000 });
     expect(getClientLimit('refreshMs')).toBe(90_000);
     expect(getClientLimit('ttsMs')).toBe(DEFAULT_CLIENT_LIMITS.ttsMs);

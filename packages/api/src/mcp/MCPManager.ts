@@ -14,7 +14,6 @@ import type {
 import type { ScheduledMCPInvocation } from '~/schedules/authorization/execution';
 import type { MCPAppOperationContext, MCPAppValidationContext } from './apps';
 import type { ScheduledMCPBearerInvocation } from '~/schedules/bearer';
-import type { MCPManagedConnectionObserver } from './status/types';
 import type { MCPClientCapabilityProfile } from './capabilities';
 import type { AuthIdentityContext } from '~/utils/identity';
 import type { GraphTokenResolver } from '~/utils/graph';
@@ -161,9 +160,8 @@ export class MCPManager extends UserConnectionManager {
     catalogRecoveryMaxStateEntries?: number,
     catalogRecoveryMaxDetachedDiscoveries?: number,
     private readonly appBindingCodec: MCPAppBindingCodec | undefined = undefined,
-    onConnectionReady?: MCPManagedConnectionObserver,
   ) {
-    super(onConnectionReady);
+    super();
     this.catalogRecoveryTracker = new MCPServerCatalogRecoveryTracker(
       catalogRecoveryMaxStateEntries,
       catalogRecoveryMaxDetachedDiscoveries,
@@ -190,7 +188,6 @@ export class MCPManager extends UserConnectionManager {
       catalogRecoveryMaxStateEntries?: number;
       catalogRecoveryMaxDetachedDiscoveries?: number;
       appBindingCodec?: MCPAppBindingCodec;
-      onConnectionReady?: MCPManagedConnectionObserver;
     },
   ): Promise<MCPManager> {
     if (MCPManager.instance) throw new Error('MCPManager has already been initialized.');
@@ -198,7 +195,6 @@ export class MCPManager extends UserConnectionManager {
       options?.catalogRecoveryMaxStateEntries,
       options?.catalogRecoveryMaxDetachedDiscoveries,
       options?.appBindingCodec,
-      options?.onConnectionReady,
     );
     await MCPManager.instance.initialize(configs);
     return MCPManager.instance;
@@ -567,18 +563,6 @@ export class MCPManager extends UserConnectionManager {
         expectedConfig: connectionTarget.serverConfig,
       });
       if (appConnection) {
-        if (userId && !args.connectionStatusManagedExternally) {
-          await this.onConnectionReady?.({
-            connection: appConnection,
-            userId,
-            serverName: args.serverName,
-            serverConfig: connectionTarget.serverConfig,
-            capabilityProfile,
-            created: true,
-            signal: args.signal,
-          });
-        }
-        args.signal?.throwIfAborted();
         return appConnection;
       }
     } else if (connectionTarget && userId) {

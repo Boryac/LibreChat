@@ -41,11 +41,17 @@ test('Connect reports verified success or failure consistently across replicas',
     return ((await response.json()) as MCPConnectionStatusResponse).connectionStatus[SERVER];
   };
   // Only the load balancer's choice is controlled. Every status body comes from API process 2.
+  let failStatusReads = false;
   await page.route('**/api/mcp/connection/status', async (route) => {
+    if (failStatusReads) {
+      await route.abort('failed');
+      return;
+    }
     const response = await route.fetch({ url: replica(2, '/api/mcp/connection/status') });
     await route.fulfill({ response });
   });
   const card = page.getByLabel(/^E2E Connection State - /);
+  let releaseLostResponse: (() => void) | undefined;
   try {
     await page.getByRole('button', { name: 'MCP Settings', exact: true }).click();
     await expect(card).toBeVisible();
@@ -68,7 +74,9 @@ test('Connect reports verified success or failure consistently across replicas',
     }
     await expect
       .soft(card)
-      .toHaveAttribute('aria-label', 'E2E Connection State - Connected', { timeout: 1000 });
+      .toHaveAttribute('aria-label', 'E2E Connection State - Connection verified', {
+        timeout: 1000,
+      });
     await page.screenshot({ path: info.outputPath('connected.png'), animations: 'disabled' });
     await info.attach('success-replicas.json', {
       body: JSON.stringify(await Promise.all([status(1), status(2)])),
@@ -88,7 +96,9 @@ test('Connect reports verified success or failure consistently across replicas',
     }
     await expect
       .soft(card)
-      .toHaveAttribute('aria-label', 'E2E Connection State - Error', { timeout: 1000 });
+      .toHaveAttribute('aria-label', 'E2E Connection State - Last connection failed', {
+        timeout: 1000,
+      });
     await expect(page.getByText('Failed to initialize MCP server', { exact: true })).toBeVisible();
     await page.screenshot({ path: info.outputPath('failed.png'), animations: 'disabled' });
 
@@ -102,7 +112,9 @@ test('Connect reports verified success or failure consistently across replicas',
     await expect.poll(async () => (await status(2)).connectionState).toBe('connected');
     await expect
       .soft(card)
-      .toHaveAttribute('aria-label', 'E2E Connection State - Connected', { timeout: 1000 });
+      .toHaveAttribute('aria-label', 'E2E Connection State - Connection verified', {
+        timeout: 1000,
+      });
     await page.screenshot({ path: info.outputPath('retry-succeeded.png'), animations: 'disabled' });
 
     await mode('hold');
@@ -117,13 +129,68 @@ test('Connect reports verified success or failure consistently across replicas',
     for (const index of [1, 2]) {
       await expect.poll(async () => (await status(index)).connectionState).toBe('error');
     }
-    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Error');
+    await expect(card).toHaveAttribute(
+      'aria-label',
+      'E2E Connection State - Last connection failed',
+    );
     await page.screenshot({ path: info.outputPath('timeout.png'), animations: 'disabled' });
     await mode('success');
     for (const index of [1, 2]) {
       expect((await status(index)).connectionState).toBe('error');
     }
+
+    // A focused browser expires success without needing another GET or a live owner.
+    const verifiedAgain = page.waitForResponse((r) =>
+      r.url().endsWith(`/api/mcp/${SERVER}/reinitialize`),
+    );
+    await card.hover();
+    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    expect(await (await verifiedAgain).json()).toMatchObject({ success: true });
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Connection verified');
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Unknown', {
+      timeout: 5000,
+    });
+    await page.screenshot({
+      path: info.outputPath('evidence-expired.png'),
+      animations: 'disabled',
+    });
+
+    // Fail the actual Connect and abort the follow-up browser GET: cached green cannot win.
+    await mode('fail');
+    failStatusReads = true;
+    const failedRefresh = page.waitForResponse((r) =>
+      r.url().endsWith(`/api/mcp/${SERVER}/reinitialize`),
+    );
+    await card.hover();
+    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await failedRefresh;
+    await expect(card).toHaveAttribute(
+      'aria-label',
+      /E2E Connection State - (Error|Last connection failed)/,
+    );
+    await page.screenshot({ path: info.outputPath('failed-refresh.png'), animations: 'disabled' });
+
+    failStatusReads = false;
+    await mode('success');
+    const heldDelivery = new Promise<void>((resolve) => {
+      releaseLostResponse = resolve;
+    });
+    await page.route(`**/api/mcp/${SERVER}/reinitialize`, async (route) => {
+      const response = await route.fetch();
+      await heldDelivery;
+      await route.fulfill({ response }).catch(() => {});
+    });
+    await card.hover();
+    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Unknown', {
+      timeout: 9000,
+    });
+    await card.hover();
+    await expect(card.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
+    await page.screenshot({ path: info.outputPath('lost-response.png'), animations: 'disabled' });
+    releaseLostResponse();
   } finally {
+    releaseLostResponse?.();
     await mode('success');
   }
 });

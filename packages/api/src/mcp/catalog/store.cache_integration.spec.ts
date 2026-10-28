@@ -68,7 +68,12 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
 
   afterAll(() => redis.disconnect());
 
-  function createStore(legacy: boolean, get?: CatalogCache['get'], deployment = prefix) {
+  function createStore(
+    legacy: boolean,
+    get?: CatalogCache['get'],
+    deployment = prefix,
+    beforeStateWrite?: () => Promise<void>,
+  ) {
     const cache: CatalogCache = {
       get:
         get ??
@@ -85,6 +90,7 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     };
     const client: NonNullable<CatalogStoreDeps['keyvRedisClient']> = {
       eval: async (script, options) => {
+        if (script.includes('local incoming = cjson.decode(ARGV[5])')) await beforeStateWrite?.();
         options.keys.forEach((key) => keys.add(key));
         const scriptKeys = [
           ...new Set(
@@ -146,7 +152,10 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
       deadline: Date.now() + 10000,
     };
     expect(await owner.setMCPConnectionState(scope, pending, 10000, true)).toBe(true);
-    expect(await otherReplica.getMCPConnectionState(scope)).toEqual(pending);
+    expect(await otherReplica.getMCPConnectionState(scope)).toMatchObject({
+      attemptId: pending.attemptId,
+      state: pending.state,
+    });
     expect(
       await owner.setMCPConnectionState(
         scope,
@@ -162,7 +171,10 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     ).toBeNull();
     const connected = { ...pending, state: 'connected' as const, verifiedUntil: Date.now() + 5000 };
     expect(await owner.setMCPConnectionState(scope, connected, 10000)).toBe(true);
-    expect(await otherReplica.getMCPConnectionState(scope)).toEqual(connected);
+    expect(await otherReplica.getMCPConnectionState(scope)).toMatchObject({
+      attemptId: connected.attemptId,
+      state: connected.state,
+    });
     expect(
       await otherReplica.setMCPConnectionState(
         scope,
@@ -172,24 +184,12 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
       ),
     ).toBe(true);
     expect(await owner.setMCPConnectionState(scope, connected, 10000)).toBe(false);
+    // A terminal outcome cannot be changed by the same writer or another replica.
+    const second = { ...pending, attemptId: 'attempt-two', state: 'error' as const };
+    expect(await otherReplica.setMCPConnectionState(scope, second, 10000)).toBe(true);
     expect(
-      await owner.setMCPConnectionState(
-        scope,
-        { ...connected, attemptId: 'replacement' },
-        10000,
-        true,
-        'attempt-one',
-      ),
+      await owner.setMCPConnectionState(scope, { ...connected, attemptId: 'attempt-two' }, 10000),
     ).toBe(false);
-    expect(
-      await owner.setMCPConnectionState(
-        scope,
-        { ...connected, attemptId: 'replacement' },
-        10000,
-        true,
-        'attempt-two',
-      ),
-    ).toBe(true);
     // Simulate the authorization generation committed by another replica.
     await redis.set(
       generationKey,
@@ -208,6 +208,78 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     expect(
       await otherReplica.getMCPConnectionState({ ...scope, configGeneration: 'new-config' }),
     ).toBeNull();
+  });
+
+  it('rejects success committed after the store deadline, even without an owner to publish timeout', async () => {
+    const store = createStore(false);
+    const scope = {
+      userId,
+      serverName,
+      configGeneration: 'deadline',
+      publicationGeneration: (await store.getMCPToolsCacheGeneration({ userId, serverName }))!,
+    };
+    const pending = {
+      attemptId: 'deadline-attempt',
+      state: 'connecting' as const,
+      deadline: Date.now() + 10,
+    };
+    expect(await store.setMCPConnectionState(scope, pending, 10000, true)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      await store.setMCPConnectionState(
+        scope,
+        { ...pending, state: 'connected', verifiedUntil: Date.now() + 10000 },
+        10000,
+      ),
+    ).toBe(false);
+    expect(await store.setMCPConnectionState(scope, { ...pending, state: 'error' }, 10000)).toBe(
+      true,
+    );
+    expect(
+      await store.setMCPConnectionState(
+        scope,
+        { ...pending, state: 'connected', verifiedUntil: Date.now() + 10000 },
+        10000,
+      ),
+    ).toBe(false);
+  });
+
+  it('cannot admit an expired delayed claim over a newer completed result', async () => {
+    const store = createStore(false);
+    const scope = {
+      userId,
+      serverName,
+      configGeneration: 'admission',
+      publicationGeneration: (await store.getMCPToolsCacheGeneration({ userId, serverName }))!,
+    };
+    const pending = {
+      attemptId: 'verified',
+      state: 'connecting' as const,
+      deadline: Date.now() + 1000,
+    };
+    expect(await store.setMCPConnectionState(scope, pending, 10000, true)).toBe(true);
+    expect(
+      await store.setMCPConnectionState(
+        scope,
+        { ...pending, state: 'connected', verifiedUntil: Date.now() + 1000 },
+        10000,
+      ),
+    ).toBe(true);
+    const delayed = createStore(
+      false,
+      undefined,
+      prefix,
+      () => new Promise((resolve) => setTimeout(resolve, 30)),
+    );
+    expect(
+      await delayed.setMCPConnectionState(
+        scope,
+        { ...pending, attemptId: 'expired', deadline: Date.now() + 10 },
+        10000,
+        true,
+      ),
+    ).toBe(false);
+    expect((await store.getMCPConnectionState(scope))?.attemptId).toBe('verified');
   });
 
   it.each([false, true])(

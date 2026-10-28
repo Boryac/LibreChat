@@ -75,6 +75,17 @@ export default function MCPStatusBadge({
     );
   }
 
+  if (serverStatus.statusUnavailable) {
+    return (
+      <div
+        role="status"
+        className={cn(badgeBaseClass, 'bg-status-neutral-subtle text-status-neutral')}
+      >
+        <span>{localize('com_nav_mcp_status_unknown')}</span>
+      </div>
+    );
+  }
+
   // Disconnected state - check if needs action
   if (connectionState === 'disconnected') {
     if (requiresOAuth) {
@@ -107,7 +118,13 @@ export default function MCPStatusBadge({
   if (connectionState === 'error') {
     return (
       <div role="status" className={cn(badgeBaseClass, 'bg-status-error-subtle text-status-error')}>
-        <span>{localize('com_nav_mcp_status_error')}</span>
+        <span>
+          {localize(
+            serverStatus.connectionAttempt
+              ? 'com_nav_mcp_status_last_failed'
+              : 'com_nav_mcp_status_error',
+          )}
+        </span>
       </div>
     );
   }
@@ -120,7 +137,13 @@ export default function MCPStatusBadge({
         className={cn(badgeBaseClass, 'bg-status-success-subtle text-status-success')}
       >
         <Check className="size-3" aria-hidden="true" />
-        <span>{localize('com_nav_mcp_status_connected')}</span>
+        <span>
+          {localize(
+            serverStatus.connectionAttempt
+              ? 'com_nav_mcp_status_verified'
+              : 'com_nav_mcp_status_connected',
+          )}
+        </span>
       </div>
     );
   }
@@ -159,6 +182,8 @@ export function getStatusDotColor(
   if (serverStatus.requestScoped) {
     return 'bg-status-info';
   }
+
+  if (serverStatus.statusUnavailable) return 'bg-status-neutral';
 
   if (connectionState === 'connected') {
     return 'bg-status-success';

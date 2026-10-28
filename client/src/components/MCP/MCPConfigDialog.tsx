@@ -60,9 +60,15 @@ export default function MCPConfigDialog({
     if (connectionState === 'connecting') {
       statusText = localize('com_ui_connecting');
     } else if (connectionState === 'error') {
-      statusText = localize('com_ui_error');
+      statusText = localize(
+        serverStatus.connectionAttempt ? 'com_nav_mcp_status_last_failed' : 'com_ui_error',
+      );
+    } else if (serverStatus.statusUnavailable) {
+      statusText = localize('com_nav_mcp_status_unknown');
     } else if (connectionState === 'connected') {
-      statusText = localize('com_ui_active');
+      statusText = localize(
+        serverStatus.connectionAttempt ? 'com_nav_mcp_status_verified' : 'com_ui_active',
+      );
     } else if (connectionState === 'disconnected') {
       statusText = requiresOAuth ? localize('com_ui_oauth') : localize('com_ui_offline');
     }
@@ -91,9 +97,17 @@ export default function MCPConfigDialog({
     // Connecting: blue (in progress)
     if (connectionState === 'connecting') {
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-info-subtle px-2 py-0.5 text-xs font-medium text-status-info">
+        <div className="bg-status-info-subtle text-status-info flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
           <Spinner className="size-3" />
           <span>{localize('com_ui_connecting')}</span>
+        </div>
+      );
+    }
+
+    if (serverStatus.statusUnavailable) {
+      return (
+        <div className="bg-status-neutral-subtle text-status-neutral flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
+          <span>{localize('com_nav_mcp_status_unknown')}</span>
         </div>
       );
     }
@@ -103,7 +117,7 @@ export default function MCPConfigDialog({
       if (requiresOAuth) {
         // Needs OAuth: amber (requires action)
         return (
-          <div className="flex items-center gap-2 rounded-full bg-status-warning-subtle px-2 py-0.5 text-xs font-medium text-status-warning">
+          <div className="bg-status-warning-subtle text-status-warning flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
             <KeyRound className="size-3" aria-hidden="true" />
             <span>{localize('com_nav_mcp_status_needs_auth')}</span>
           </div>
@@ -111,7 +125,7 @@ export default function MCPConfigDialog({
       }
       // Simply disconnected: gray (neutral)
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-neutral-subtle px-2 py-0.5 text-xs font-medium text-status-neutral">
+        <div className="bg-status-neutral-subtle text-status-neutral flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
           <PlugZap className="size-3" aria-hidden="true" />
           <span>{localize('com_nav_mcp_status_disconnected')}</span>
         </div>
@@ -121,9 +135,13 @@ export default function MCPConfigDialog({
     // Error: red
     if (connectionState === 'error') {
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-error-subtle px-2 py-0.5 text-xs font-medium text-status-error">
+        <div className="bg-status-error-subtle text-status-error flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
           <AlertTriangle className="size-3" aria-hidden="true" />
-          <span>{localize('com_ui_error')}</span>
+          <span>
+            {localize(
+              serverStatus.connectionAttempt ? 'com_nav_mcp_status_last_failed' : 'com_ui_error',
+            )}
+          </span>
         </div>
       );
     }
@@ -131,9 +149,13 @@ export default function MCPConfigDialog({
     // Connected: green
     if (connectionState === 'connected') {
       return (
-        <div className="flex items-center gap-2 rounded-full bg-status-success-subtle px-2 py-0.5 text-xs font-medium text-status-success">
-          <div className="size-1.5 rounded-full bg-status-success" />
-          <span>{localize('com_ui_active')}</span>
+        <div className="bg-status-success-subtle text-status-success flex items-center gap-2 rounded-full px-2 py-0.5 text-xs font-medium">
+          <div className="bg-status-success size-1.5 rounded-full" />
+          <span>
+            {localize(
+              serverStatus.connectionAttempt ? 'com_nav_mcp_status_verified' : 'com_ui_active',
+            )}
+          </span>
         </div>
       );
     }

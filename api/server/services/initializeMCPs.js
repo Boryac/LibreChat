@@ -3,7 +3,6 @@ const { logger } = require('@librechat/data-schemas');
 const { resolveMCPAppsPolicy } = require('librechat-data-provider');
 const {
   registerShutdownTask,
-  createMCPConnectionStatusObserver,
   setMCPToolsChangedHandler,
   getDeploymentPluginMcpServers,
   setMCPToolsChangedGenerationHandler,
@@ -13,14 +12,7 @@ const {
   createMCPPolicyResolver,
   reportStoredMCPTombstones,
 } = require('@librechat/api');
-const {
-  syncStaticTools,
-  mergeAppTools,
-  getAppConfig,
-  invalidateCachedTools,
-  getMCPConnectionState,
-  setMCPConnectionState,
-} = require('./Config');
+const { syncStaticTools, mergeAppTools, getAppConfig, invalidateCachedTools } = require('./Config');
 const { startMCPAuthorizationFenceRetryWorker } = require('./MCPAuthorizationFenceRetry');
 const {
   getMCPToolsCacheGeneration,
@@ -135,10 +127,6 @@ async function initializeMCPs() {
       catalogRecoveryMaxDetachedDiscoveries:
         appConfig?.mcpSettings?.catalogRecovery?.maxDetachedDiscoveries,
       appBindingCodec: createMCPAppBindingCodec(process.env.JWT_SECRET),
-      onConnectionReady: createMCPConnectionStatusObserver(
-        { getMCPConnectionState, setMCPConnectionState, getGeneration: getMCPToolsCacheGeneration },
-        appConfig?.mcpSettings?.connectionStatus,
-      ),
     });
     startMCPAuthorizationFenceRetryWorker(invalidateCachedTools, {
       intervalMs: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceRetryIntervalMs,

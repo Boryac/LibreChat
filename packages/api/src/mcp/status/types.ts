@@ -1,6 +1,4 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
-import type { MCPClientCapabilityProfile } from '../capabilities';
-import type { ParsedServerConfig } from '../types';
 
 export interface MCPConnectionStateScope {
   userId: string;
@@ -9,51 +7,33 @@ export interface MCPConnectionStateScope {
   publicationGeneration: string;
 }
 
-/** Actual explicit connection-attempt evidence, never inferred from configuration or a catalog. */
+/** A bounded explicit operation. Only Pending may transition, once, to a terminal result. */
 export interface MCPConnectionStateRecord {
   attemptId: string;
   state: MCPServerStatus['connectionState'];
+  startedAt?: number;
+  /** Read-time clock from the store; never used as proof of authorization. */
+  serverNow?: number;
   deadline: number;
   verifiedUntil?: number;
   requiresOAuth?: boolean;
-  explicitAttempt?: boolean;
+  statusUnavailable?: boolean;
 }
 
 export interface MCPConnectionStateStore {
   getMCPConnectionState: (
     scope: MCPConnectionStateScope,
   ) => Promise<MCPConnectionStateRecord | null>;
+  /** claim starts a new operation; updates can only finish the current, unexpired Pending operation. */
   setMCPConnectionState: (
     scope: MCPConnectionStateScope,
     record: MCPConnectionStateRecord,
     ttl: number,
     claim?: boolean | 'ifAbsent',
-    expectedAttemptId?: string,
   ) => Promise<boolean>;
 }
-
-export type MCPManagedConnectionObserver = (params: {
-  connection: ObservedMCPConnection;
-  userId: string;
-  serverName: string;
-  serverConfig: ParsedServerConfig;
-  capabilityProfile: MCPClientCapabilityProfile;
-  publicationGeneration?: string;
-  created: boolean;
-  signal?: AbortSignal;
-}) => Promise<void>;
 
 export interface ObservedMCPConnection {
   isConnected: (signal?: AbortSignal, force?: boolean) => Promise<boolean>;
   usesOAuth?: () => boolean;
-  on: (
-    event: 'connectionChange',
-    listener: (state: MCPConnectionStateRecord['state']) => void,
-  ) => unknown;
-  once: (event: 'disposed', listener: () => void) => unknown;
-  removeListener(
-    event: 'connectionChange',
-    listener: (state: MCPConnectionStateRecord['state']) => void,
-  ): unknown;
-  removeListener(event: 'disposed', listener: () => void): unknown;
 }

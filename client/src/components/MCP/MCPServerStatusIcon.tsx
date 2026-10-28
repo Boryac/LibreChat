@@ -140,6 +140,8 @@ function CompactStatusDot({ serverStatus, isInitializing }: CompactStatusDotProp
     colorClass = 'bg-status-info';
   } else if (serverStatus.requestScoped) {
     colorClass = 'bg-status-info';
+  } else if (serverStatus.statusUnavailable) {
+    colorClass = 'bg-status-neutral';
   } else if (connectionState === 'connected') {
     colorClass = 'bg-status-success';
   } else if (connectionState === 'error') {

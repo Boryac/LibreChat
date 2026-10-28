@@ -5,6 +5,12 @@ import { STANDARD_MCP_CAPABILITY_PROFILE } from '../capabilities';
 import { createMCPCatalogStore } from '../catalog/store';
 import { runMCPConnectionAttempt } from './attempt';
 
+const connections: EventEmitter[] = [];
+afterEach(async () => {
+  for (const connection of connections.splice(0)) connection.emit('disposed');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});
+
 function fixture() {
   const values = new Map<string, unknown>();
   const cache = {
@@ -26,9 +32,13 @@ function fixture() {
       requiresOAuth: false,
     },
     capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
-    policy: { attemptTimeoutMs: 100, leaseDurationMs: 3000, failureRetentionMs: 10000 },
+    policy: { attemptTimeoutMs: 100, evidenceFreshnessMs: 3000, resultRetentionMs: 10000 },
   };
-  const connection = Object.assign(new EventEmitter(), { isConnected: jest.fn(async () => true) });
+  const connection = Object.assign(new EventEmitter(), {
+    isConnected: jest.fn(async () => true),
+    dispose: jest.fn(async () => {}),
+  });
+  connections.push(connection);
   const observations: MCPConnectionStateRecord[] = [];
   let observedScope: MCPConnectionStateScope | undefined;
   const deps = {
@@ -39,16 +49,9 @@ function fixture() {
       value: MCPConnectionStateRecord,
       ttl: number,
       claim?: boolean | 'ifAbsent',
-      expectedAttemptId?: string,
     ) => {
       observedScope = scope;
-      const accepted = await store.setMCPConnectionState(
-        scope,
-        value,
-        ttl,
-        claim,
-        expectedAttemptId,
-      );
+      const accepted = await store.setMCPConnectionState(scope, value, ttl, claim);
       if (accepted) observations.push(value);
       return accepted;
     },
@@ -60,22 +63,42 @@ function fixture() {
   return { store, params, connection, observations, deps, scope: () => observedScope! };
 }
 
-describe('verified MCP connection attempts', () => {
-  it('records Connecting before work and Connected only after actual verification', async () => {
+describe('bounded explicit Connect operations', () => {
+  it('publishes pending before work and finishes with a verified, immutable result', async () => {
     const f = fixture();
-    await expect(runMCPConnectionAttempt(f.params, f.deps)).resolves.toEqual({ success: true });
+    const result = await runMCPConnectionAttempt(f.params, f.deps);
+    expect(result).toMatchObject({
+      success: true,
+      connectionAttempt: { state: 'connected', remainingMs: expect.any(Number) },
+    });
     expect(f.observations.map((r) => r.state)).toEqual(['connecting', 'connected']);
     expect(f.connection.isConnected).toHaveBeenCalledWith(expect.any(AbortSignal), true);
-    f.connection.emit('disposed');
+    const terminal = await f.store.getMCPConnectionState(f.scope());
+    expect(
+      await f.store.setMCPConnectionState(f.scope(), { ...terminal!, state: 'error' }, 10000),
+    ).toBe(false);
+    expect((await f.store.getMCPConnectionState(f.scope()))?.state).toBe('connected');
   });
-  it('records a failed verification rather than reporting a truthy connection as success', async () => {
+
+  it('leaves no listeners or idle work on a shared physical connection after 1,000 users', async () => {
     const f = fixture();
-    f.connection.isConnected.mockResolvedValue(false);
-    await expect(runMCPConnectionAttempt(f.params, f.deps)).rejects.toThrow('verified');
-    expect(f.observations[f.observations.length - 1]?.state).toBe('error');
-    f.connection.emit('disposed');
+    for (let i = 0; i < 1000; i++) {
+      const params = { ...f.params, userId: `user-${i}` };
+      await runMCPConnectionAttempt(params, {
+        ...f.deps,
+        getGeneration: () => f.store.getMCPToolsCacheGeneration(params),
+      });
+    }
+    expect(f.connection.listenerCount('connectionChange')).toBe(0);
+    expect(f.connection.listenerCount('disposed')).toBe(0);
+    expect(f.connection.isConnected).toHaveBeenCalledTimes(1000);
+    f.connection.emit('connectionChange', 'connected');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.connection.isConnected).toHaveBeenCalledTimes(1000);
+    expect(f.observations).toHaveLength(2000);
   });
-  it('records failure while preserving the original authentication error', async () => {
+
+  it('preserves the original authentication failure and records a terminal failure', async () => {
     const f = fixture();
     const error = new Error('synthetic authentication rejection');
     await expect(
@@ -86,213 +109,175 @@ describe('verified MCP connection attempts', () => {
         },
       }),
     ).rejects.toBe(error);
-    expect(f.observations[f.observations.length - 1]?.state).toBe('error');
+    expect((await f.store.getMCPConnectionState(f.scope()))?.state).toBe('error');
+    expect(
+      await f.store.setMCPConnectionState(
+        f.scope(),
+        { ...f.observations[0], state: 'connected', verifiedUntil: Date.now() + 1000 },
+        10000,
+      ),
+    ).toBe(false);
   });
-  it('bounds a connect implementation that ignores cancellation', async () => {
+
+  it('does not mistake a connection object for verified success', async () => {
     const f = fixture();
-    const result = await runMCPConnectionAttempt(
-      { ...f.params, policy: { ...f.params.policy, attemptTimeoutMs: 10 } },
-      { ...f.deps, connect: () => new Promise(() => {}) },
-    );
-    expect(result).toMatchObject({ success: false, message: expect.stringContaining('timed out') });
-    expect(f.observations[f.observations.length - 1]?.state).toBe('error');
+    f.connection.isConnected.mockResolvedValue(false);
+    await expect(runMCPConnectionAttempt(f.params, f.deps)).rejects.toThrow('verified');
+    expect((await f.store.getMCPConnectionState(f.scope()))?.state).toBe('error');
   });
-  it('counts a delayed shared claim against the same attempt deadline', async () => {
+
+  it('rejects a final success write delayed past the deadline at the actual store boundary', async () => {
     const f = fixture();
     const original = f.deps.setMCPConnectionState;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const result = await runMCPConnectionAttempt(
+      { ...f.params, policy: { ...f.params.policy, attemptTimeoutMs: 10 } },
+      {
+        ...f.deps,
+        setMCPConnectionState: async (...args) => {
+          if (args[1].state === 'connected') await held;
+          return original(...args);
+        },
+      },
+    );
+    expect(result).toMatchObject({ success: false });
+    release();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect((await f.store.getMCPConnectionState(f.scope()))?.state).toBe('error');
+  });
+
+  it('bounds admission and does not start transport work after a delayed claim', async () => {
+    const f = fixture();
     const connect = jest.fn(f.deps.connect);
-    try {
-      const result = await runMCPConnectionAttempt(
-        { ...f.params, policy: { ...f.params.policy, attemptTimeoutMs: 10 } },
+    const original = f.deps.setMCPConnectionState;
+    await expect(
+      runMCPConnectionAttempt(
+        { ...f.params, policy: { ...f.params.policy, attemptTimeoutMs: 5 } },
         {
           ...f.deps,
           connect,
           setMCPConnectionState: async (...args) => {
-            if (args[3]) await new Promise((resolve) => setTimeout(resolve, 25));
+            await new Promise((resolve) => setTimeout(resolve, 20));
             return original(...args);
           },
         },
-      );
-      expect(result).toMatchObject({ success: false });
-      expect(connect).not.toHaveBeenCalled();
-    } finally {
-      f.connection.emit('disposed');
-    }
+      ),
+    ).rejects.toThrow();
+    expect(connect).not.toHaveBeenCalled();
   });
 
-  it('prevents an older connection from resurrecting success after authorization invalidation', async () => {
+  it.each(['connect', 'verification'] as const)(
+    'bounds a stalled %s and fences late completion',
+    async (stage) => {
+      const f = fixture();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (stage === 'verification')
+        f.connection.isConnected.mockImplementation(async () => {
+          await held;
+          return true;
+        });
+      const connect =
+        stage === 'connect'
+          ? async (capture: (connection: ObservedMCPConnection) => void) => {
+              await held;
+              capture(f.connection);
+              return { success: true };
+            }
+          : f.deps.connect;
+      expect(
+        await runMCPConnectionAttempt(
+          { ...f.params, policy: { ...f.params.policy, attemptTimeoutMs: 5 } },
+          { ...f.deps, connect },
+        ),
+      ).toMatchObject({ success: false });
+      release();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect((await f.store.getMCPConnectionState(f.scope()))?.state).toBe('error');
+      expect(f.connection.listenerCount('connectionChange')).toBe(0);
+    },
+  );
+
+  it('cannot publish under revoked authorization or another operation identity', async () => {
     const f = fixture();
     await runMCPConnectionAttempt(f.params, f.deps);
+    const old = f.observations[0];
+    await f.store.setMCPConnectionState(f.scope(), { ...old, attemptId: 'peer' }, 10000, true);
+    expect(
+      await f.store.setMCPConnectionState(f.scope(), { ...old, state: 'connected' }, 10000),
+    ).toBe(false);
     await f.store.invalidateCachedTools(f.params);
-    await expect(
-      f.store.setMCPConnectionState(
+    expect(
+      await f.store.setMCPConnectionState(
         f.scope(),
-        { ...f.observations[f.observations.length - 1]!, state: 'connected' },
+        { ...old, attemptId: 'peer', state: 'connected' },
         10000,
       ),
-    ).resolves.toBe(false);
-    f.connection.emit('disposed');
+    ).toBe(false);
   });
-  it('prevents a replaced attempt from publishing a late success', async () => {
+
+  it('keeps successful history unchanged by later transport disposal', async () => {
     const f = fixture();
     await runMCPConnectionAttempt(f.params, f.deps);
-    const old = f.observations[f.observations.length - 1]!;
-    await f.store.setMCPConnectionState(
-      f.scope(),
-      { ...old, attemptId: 'new', state: 'connecting' },
-      10000,
-      true,
-    );
-    await expect(f.store.setMCPConnectionState(f.scope(), old, 10000)).resolves.toBe(false);
     f.connection.emit('disposed');
-  });
-  it('publishes transport loss and disposal without allowing an older health probe to win', async () => {
-    const f = fixture();
-    let complete!: (value: boolean) => void;
-    let observed!: () => void;
-    const ended = new Promise<void>((resolve) => {
-      observed = resolve;
-    });
-    const original = f.deps.setMCPConnectionState;
-    f.deps.setMCPConnectionState = async (...args) => {
-      const accepted = await original(...args);
-      if (args[1].state === 'disconnected') observed();
-      return accepted;
-    };
-    await runMCPConnectionAttempt(f.params, f.deps);
-    f.connection.isConnected.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          complete = resolve;
-        }),
-    );
-    f.connection.emit('connectionChange', 'connected');
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    f.connection.emit('disposed');
-    complete(true);
-    await ended;
-    expect(f.observations.map((value) => value.state)).toEqual([
-      'connecting',
-      'connected',
-      'disconnected',
-    ]);
-    expect(f.connection.listenerCount('connectionChange')).toBe(0);
-    expect(f.connection.listenerCount('disposed')).toBe(0);
-  });
-  it('publishes a transport error promptly while an older health probe is stalled', async () => {
-    const f = fixture();
-    let complete!: (value: boolean) => void;
-    let published!: (value: string) => void;
-    const outcome = new Promise<string>((resolve) => {
-      published = resolve;
-    });
-    await runMCPConnectionAttempt(f.params, f.deps);
-    const previous = f.deps.setMCPConnectionState;
-    f.deps.setMCPConnectionState = async (...args) => {
-      const accepted = await previous(...args);
-      if (accepted && args[1].state === 'error') published('error');
-      return accepted;
-    };
-    f.connection.isConnected.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          complete = resolve;
-        }),
-    );
-    f.connection.emit('connectionChange', 'connected');
-    await new Promise<void>((resolve) => setImmediate(resolve));
     f.connection.emit('connectionChange', 'error');
-    const cutoff = setTimeout(() => published('late'), 50);
-    try {
-      expect(await outcome).toBe('error');
-    } finally {
-      clearTimeout(cutoff);
-      complete(true);
-      f.connection.emit('disposed');
-    }
+    expect((await f.store.getMCPConnectionState(f.scope()))?.state).toBe('connected');
   });
 
-  it('bounds verification even when the transport ignores its abort signal', async () => {
+  it('fails admission on a status-store outage before starting the connection', async () => {
     const f = fixture();
-    f.connection.isConnected.mockImplementation(() => new Promise(() => {}));
-    const result = await runMCPConnectionAttempt(
-      { ...f.params, policy: { ...f.params.policy, attemptTimeoutMs: 10 } },
-      f.deps,
-    );
-    expect(result).toMatchObject({ success: false });
-    expect(f.connection.listenerCount('connectionChange')).toBe(0);
-    expect(f.observations[f.observations.length - 1].state).toBe('error');
-  });
-
-  it('accepts the generation bound to credentials rotated by this exact connection', async () => {
-    const f = fixture();
-    let rotated: string | undefined;
-    const connect = async (capture: (value: ObservedMCPConnection) => void) => {
-      rotated = await f.store.invalidateCachedTools(f.params);
-      capture(f.connection);
-      return { success: true };
-    };
+    const connect = jest.fn(f.deps.connect);
     await expect(
       runMCPConnectionAttempt(f.params, {
         ...f.deps,
         connect,
-        getConnectionGeneration: () => rotated,
+        setMCPConnectionState: async () => {
+          throw new Error('store unavailable');
+        },
       }),
-    ).resolves.toEqual({ success: true });
-    expect(f.scope().publicationGeneration).toBe(rotated);
-    f.connection.emit('disposed');
+    ).resolves.toMatchObject({ success: false, failureReason: 'status_unavailable' });
+    expect(connect).not.toHaveBeenCalled();
   });
-  it('does not adopt rotated credentials over another active attempt', async () => {
+  it('reports unconfirmed publication without disposing a verified healthy transport', async () => {
     const f = fixture();
-    let rotated: string | undefined;
-    const connect = async (capture: (value: ObservedMCPConnection) => void) => {
-      rotated = await f.store.invalidateCachedTools(f.params);
+    const original = f.deps.setMCPConnectionState;
+    const result = await runMCPConnectionAttempt(f.params, {
+      ...f.deps,
+      setMCPConnectionState: async (...args) => {
+        if (args[1].state === 'connected') throw new Error('store write unavailable');
+        return original(...args);
+      },
+    });
+    expect(result).toMatchObject({
+      success: false,
+      statusUnavailable: true,
+      failureReason: 'status_unavailable',
+    });
+    expect(f.connection.isConnected).toHaveBeenCalledTimes(1);
+    expect(f.connection.dispose).not.toHaveBeenCalled();
+    expect((await f.store.getMCPConnectionState(f.scope()))?.statusUnavailable).toBe(true);
+    expect(f.connection.listenerCount('connectionChange')).toBe(0);
+  });
+  it('returns the caller operation and actual authorization generation for a first connection', async () => {
+    const f = fixture();
+    const attemptId = '189f2080-cdb7-4182-b9ac-ff53a724fe0a';
+    const result = await runMCPConnectionAttempt({ ...f.params, attemptId }, f.deps);
+    expect(result).toMatchObject({
+      connectionAttempt: { attemptId, authorizationGeneration: f.scope().publicationGeneration },
+    });
+    const terminal = await f.store.getMCPConnectionState(f.scope());
+    expect(
       await f.store.setMCPConnectionState(
-        { ...f.scope(), publicationGeneration: rotated! },
-        { attemptId: 'peer', state: 'connecting', deadline: Date.now() + 1000 },
+        f.scope(),
+        { ...terminal!, state: 'connecting' },
         10000,
         true,
-      );
-      capture(f.connection);
-      return { success: true };
-    };
-    await expect(
-      runMCPConnectionAttempt(f.params, {
-        ...f.deps,
-        connect,
-        getConnectionGeneration: () => rotated,
-      }),
-    ).rejects.toThrow('superseded');
-    expect((await f.store.getMCPConnectionState(f.scope()))?.attemptId).toBe('peer');
-    f.connection.emit('disposed');
-  });
-
-  it('gives an automatic reconnect a new pending deadline after the original attempt ended', async () => {
-    const f = fixture();
-    await runMCPConnectionAttempt(f.params, f.deps);
-    const now = Date.now() + f.params.policy.attemptTimeoutMs + 1;
-    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      f.connection.emit('connectionChange', 'connecting');
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const current = await f.store.getMCPConnectionState(f.scope());
-      expect(current?.state).toBe('connecting');
-      expect(current?.deadline).toBeGreaterThan(now);
-    } finally {
-      clock.mockRestore();
-      f.connection.emit('disposed');
-    }
-  });
-
-  it('keeps user and config scopes isolated', async () => {
-    const f = fixture();
-    await runMCPConnectionAttempt(f.params, f.deps);
-    await expect(
-      f.store.getMCPConnectionState({ ...f.scope(), userId: 'other' }),
-    ).resolves.toBeNull();
-    await expect(
-      f.store.getMCPConnectionState({ ...f.scope(), configGeneration: 'changed' }),
-    ).resolves.toBeNull();
-    f.connection.emit('disposed');
+      ),
+    ).toBe(false);
   });
 });

@@ -1,7 +1,12 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
 import type { MCPConnectionStateRecord } from './status/types';
 import type { ParsedServerConfig } from './types';
-import { requiresEphemeralUserConnection, hasRuntimeUrlPlaceholders } from './utils';
+import {
+  requiresEphemeralUserConnection,
+  hasRuntimeUrlPlaceholders,
+  hasCustomUserVars,
+} from './utils';
+import { projectMCPConnectionAttempt } from './status/projection';
 
 interface StatusConnection {
   isStale: (updatedAt?: number) => boolean;
@@ -62,7 +67,7 @@ export async function getMCPServerConnectionStatus<Context>(
   deps: StatusDependencies<Context>,
 ): Promise<MCPServerStatus> {
   const connection = appConnections.get(serverName) || userConnections.get(serverName);
-  const isStaleOrDoNotExist = connection ? connection?.isStale(config.updatedAt) : true;
+  const isStaleOrDoNotExist = connection ? connection.isStale(config.updatedAt) : true;
   const configuredOAuth = oauthServers.has(serverName);
   const liveConnectionOAuth = connection?.usesOAuth?.() === true;
   const runtimeOAuthCandidate = canDetectMCPRuntimeOAuth(config);
@@ -79,17 +84,20 @@ export async function getMCPServerConnectionStatus<Context>(
     connectionGeneration != null &&
     observation?.generation != null &&
     connectionGeneration !== observation.generation;
-  let sharedState = shared?.state;
-  if (shared?.state === 'connecting' && shared.deadline <= Date.now()) {
+  const now = shared?.serverNow ?? Date.now();
+  let sharedState = shared?.statusUnavailable ? ('disconnected' as const) : shared?.state;
+  if (shared?.state === 'connecting' && shared.deadline <= now) {
     sharedState = 'error';
-  } else if (shared?.state === 'connected' && (shared.verifiedUntil ?? 0) <= Date.now()) {
+  } else if (shared?.state === 'connected' && (shared.verifiedUntil ?? 0) <= now) {
     sharedState = 'disconnected';
   }
+  // A process-local socket cannot establish a deployment-wide result, including
+  // after the retained operation expires. OAuth's durable authorization fallback is separate.
   const baseConnectionState =
     sharedState ??
-    (isStaleOrDoNotExist || staleGeneration
-      ? 'disconnected'
-      : connection?.connectionState || 'disconnected');
+    ((effectiveOAuth || requestScoped) && !isStaleOrDoNotExist && !staleGeneration
+      ? (connection?.connectionState ?? 'disconnected')
+      : 'disconnected');
   let finalConnectionState = baseConnectionState;
   let requiresOAuth = effectiveOAuth;
   let authorizationState: MCPServerStatus['authorizationState'] = effectiveOAuth
@@ -120,23 +128,43 @@ export async function getMCPServerConnectionStatus<Context>(
         requiresOAuth = true;
         finalConnectionState = 'connecting';
         authorizationState = 'authorizing';
-      } else if (
-        !shared &&
-        (await deps.hasDurableAuthorization(userId, serverName, config, runtimeContext))
-      ) {
+      } else if (await deps.hasDurableAuthorization(userId, serverName, config, runtimeContext)) {
         /** OAuth readiness is durable even when this pod has no live connection. */
         requiresOAuth = true;
-        finalConnectionState = 'connected';
+        finalConnectionState = shared ? baseConnectionState : 'connected';
         authorizationState = 'authorized';
       }
     }
   }
 
+  const statusUnavailable =
+    finalConnectionState === 'disconnected' &&
+    !requestScoped &&
+    authorizationState !== 'needs_authorization';
   return {
+    ...(shared && {
+      connectionAttempt: projectMCPConnectionAttempt(shared, observation?.generation),
+    }),
+    ...(statusUnavailable && { statusUnavailable: true }),
     requiresOAuth,
     ...(requestScoped && { requestScoped: true }),
     ...(configurationState && { configurationState }),
     connectionState: finalConnectionState,
     authorizationState,
+  };
+}
+
+/** A display-store outage provides no connectivity or authorization evidence. */
+export function getUnavailableMCPServerStatus(
+  config: ParsedServerConfig,
+  requiresOAuth: boolean,
+): MCPServerStatus {
+  return {
+    connectionState: 'disconnected',
+    statusUnavailable: true,
+    requiresOAuth,
+    ...(requiresEphemeralUserConnection(config) && { requestScoped: true }),
+    ...(requiresEphemeralUserConnection(config) &&
+      hasCustomUserVars(config) && { configurationState: 'needs_configuration' as const }),
   };
 }

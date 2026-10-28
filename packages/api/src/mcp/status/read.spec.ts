@@ -55,10 +55,14 @@ describe('shared MCP connection status', () => {
     const deps = dependencies({ ...observation('connected'), verifiedUntil: Date.now() - 1 });
     expect(
       await getMCPServerConnectionStatus({ ...params, oauthServers: new Set(['server']) }, deps),
-    ).toMatchObject({ connectionState: 'disconnected', authorizationState: 'needs_authorization' });
-    expect(deps.hasDurableAuthorization).not.toHaveBeenCalled();
+    ).toMatchObject({
+      connectionState: 'disconnected',
+      authorizationState: 'authorized',
+      statusUnavailable: true,
+    });
+    expect(deps.hasDurableAuthorization).toHaveBeenCalled();
   });
-  it('rejects a local transport from an invalidated authorization generation', async () => {
+  it('does not resurrect process-local green when operation evidence is absent or expired', async () => {
     const connection = { isStale: () => false, connectionState: 'connected' as const };
     expect(
       await getMCPServerConnectionStatus(

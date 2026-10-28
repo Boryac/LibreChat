@@ -18,6 +18,7 @@ import {
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
 import { clearLocalStorage } from '~/utils/localStorage';
+import { mcpConnectionResultsAtom } from '~/store/mcp';
 import { activeRunFamily } from '~/hooks/SSE/atoms';
 import store from '~/store';
 
@@ -34,6 +35,7 @@ export default function useClearStates() {
         /* Jotai's default store outlives the authenticated route: left alone, a
            file manager open at logout reopens for the next session, still
            holding the previous session's unmounted opener. */
+        jotaiStore.set(mcpConnectionResultsAtom, {});
         jotaiStore.set(showFilesDialogAtom, false);
         jotaiStore.set(filesDialogTriggerAtom, null);
 

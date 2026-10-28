@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
+import type { MCPConnectionAttempt } from 'librechat-data-provider';
 import type {
   MCPConnectionStateScope,
   MCPConnectionStateRecord,
@@ -10,19 +11,20 @@ import type { MCPReinitializeConfigResolution, MCPReinitializeStopResult } from 
 import type { MCPClientCapabilityProfile } from '../capabilities';
 import type { ParsedServerConfig } from '../types';
 import { getMCPToolCatalogGeneration } from '../toolsChanged';
+import { projectMCPConnectionAttempt } from './projection';
 import { requiresEphemeralUserConnection } from '../utils';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 export interface MCPConnectionStatusPolicy {
   attemptTimeoutMs: number;
-  leaseDurationMs: number;
-  failureRetentionMs: number;
+  evidenceFreshnessMs: number;
+  resultRetentionMs: number;
 }
 
 export const DEFAULT_MCP_CONNECTION_STATUS_POLICY: MCPConnectionStatusPolicy = {
   attemptTimeoutMs: 60_000,
-  leaseDurationMs: 90_000,
-  failureRetentionMs: 600_000,
+  evidenceFreshnessMs: 90_000,
+  resultRetentionMs: 600_000,
 };
 
 interface AttemptResult {
@@ -55,10 +57,37 @@ async function withDeadline<T>(operation: Promise<T>, signal: AbortSignal): Prom
   }
 }
 
-/** Publish only connection-attempt results and observations from their owning live connection.
- * The shared authorization generation and attempt identity fence every late completion/update. */
+class MCPStatusUnavailableError extends Error {}
+
+async function statusOperation<T>(operation: Promise<T>): Promise<T> {
+  try {
+    return await operation;
+  } catch (error) {
+    logger.warn('[MCP Connection Status] Shared outcome unavailable', getSafeErrorMetadata(error));
+    throw new MCPStatusUnavailableError('MCP connection outcome could not be confirmed');
+  }
+}
+
+function unavailableResult(
+  serverName: string,
+): MCPReinitializeStopResult & { statusUnavailable: true } {
+  return {
+    success: false,
+    statusUnavailable: true,
+    availableTools: null,
+    tools: null,
+    serverName,
+    oauthRequired: false,
+    oauthUrl: null,
+    failureReason: 'status_unavailable',
+    message: 'MCP connection outcome could not be confirmed; try again',
+  };
+}
+
+/** Bounded explicit Connect operation. No listeners, heartbeat or manager checkout side effects. */
 export async function runMCPConnectionAttempt<T extends AttemptResult>(
   params: {
+    attemptId?: string;
     userId: string;
     serverName: string;
     serverConfig: ParsedServerConfig;
@@ -75,8 +104,20 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
       serverConfig: ParsedServerConfig,
     ) => Promise<T | undefined>;
   },
-): Promise<T | MCPReinitializeStopResult | undefined> {
+): Promise<
+  | ((T | MCPReinitializeStopResult) & {
+      connectionAttempt?: MCPConnectionAttempt;
+      statusUnavailable?: boolean;
+    })
+  | undefined
+> {
   const policy = { ...DEFAULT_MCP_CONNECTION_STATUS_POLICY, ...params.policy };
+  if (
+    params.attemptId != null &&
+    (typeof params.attemptId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.attemptId))
+  )
+    throw new Error('Invalid MCP operation identifier');
   if (requiresEphemeralUserConnection(params.serverConfig)) {
     return deps.connect(
       () => {},
@@ -84,194 +125,195 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
       params.serverConfig,
     );
   }
-  const generation = await deps.getGeneration();
-  if (!generation) throw new Error('MCP connection attempt has no authorization generation');
-  const scope: MCPConnectionStateScope = {
-    userId: params.userId,
-    serverName: params.serverName,
-    configGeneration: getMCPToolCatalogGeneration(params.serverConfig, params.capabilityProfile),
-    publicationGeneration: generation,
-  };
-  const record: MCPConnectionStateRecord = {
-    attemptId: randomUUID(),
-    state: 'connecting',
-    explicitAttempt: true,
-    deadline: Date.now() + policy.attemptTimeoutMs,
-  };
-  const signal = AbortSignal.timeout(Math.max(1, record.deadline - Date.now()));
-  const retainedTtl = policy.attemptTimeoutMs + policy.failureRetentionMs;
-  if (!(await deps.setMCPConnectionState(scope, record, retainedTtl, true))) {
-    throw new Error('MCP connection attempt was superseded');
-  }
-  let connection: ObservedMCPConnection | undefined;
+  const deadline = Date.now() + policy.attemptTimeoutMs;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error('MCP connection deadline expired')),
+    policy.attemptTimeoutMs,
+  );
+  timer.unref?.();
+  const budget = controller.signal;
   try {
-    signal.throwIfAborted();
-    const resolution = await withDeadline<MCPReinitializeConfigResolution>(
-      deps.resolveConfig?.() ?? Promise.resolve({ serverConfig: params.serverConfig }),
-      signal,
-    );
-    if (resolution.result) {
-      await deps.setMCPConnectionState(scope, { ...record, state: 'error' }, retainedTtl);
-      return resolution.result;
+    const setState: MCPConnectionStateStore['setMCPConnectionState'] = (...args) =>
+      statusOperation(deps.setMCPConnectionState(...args));
+    const getState: MCPConnectionStateStore['getMCPConnectionState'] = (...args) =>
+      statusOperation(deps.getMCPConnectionState(...args));
+    const generation = await withDeadline(deps.getGeneration(), budget);
+    if (!generation) throw new Error('MCP connection attempt has no authorization generation');
+    const scope: MCPConnectionStateScope = {
+      userId: params.userId,
+      serverName: params.serverName,
+      configGeneration: getMCPToolCatalogGeneration(params.serverConfig, params.capabilityProfile),
+      publicationGeneration: generation,
+    };
+    const record: MCPConnectionStateRecord = {
+      attemptId: params.attemptId ?? randomUUID(),
+      state: 'connecting',
+      startedAt: Date.now(),
+      deadline,
+    };
+    const signal = budget;
+    const retainedTtl =
+      policy.attemptTimeoutMs + Math.max(policy.resultRetentionMs, policy.evidenceFreshnessMs);
+    if (!(await withDeadline(setState(scope, record, retainedTtl, true), budget))) {
+      throw new Error('MCP connection attempt was superseded');
     }
-    const serverConfig = resolution.serverConfig ?? params.serverConfig;
-    const configGeneration = getMCPToolCatalogGeneration(serverConfig, params.capabilityProfile);
-    if (configGeneration !== scope.configGeneration) {
-      scope.configGeneration = configGeneration;
-      if (!(await deps.setMCPConnectionState(scope, record, retainedTtl, true)))
-        throw new Error('MCP connection attempt was superseded');
+    // Read back the admission timestamp/deadline assigned atomically by the shared store.
+    const admitted = await withDeadline(getState(scope), budget);
+    if (!admitted || admitted.attemptId !== record.attemptId) {
+      throw new Error('MCP connection attempt was superseded');
     }
-    const result = await withDeadline(
-      deps.connect(
-        (value) => {
-          connection = value;
-        },
-        signal,
-        serverConfig,
-      ),
-      signal,
-    );
-    if (result?.oauthRequired || result?.connectionDeferred) {
-      record.requiresOAuth = result.oauthRequired === true;
-      // OAuth has its own guarded flow and readiness reinitialization. A deferred
-      // chat-scoped connection likewise cannot be advertised as a verified transport.
-      await deps.setMCPConnectionState(scope, { ...record, state: 'disconnected' }, retainedTtl);
-      return result;
-    }
-    if (!result?.success || !connection) {
-      await deps.setMCPConnectionState(scope, { ...record, state: 'error' }, retainedTtl);
-      if (result?.success) throw new Error('MCP connection verification failed');
-      return result;
-    }
-    record.requiresOAuth = connection.usesOAuth?.() === true;
-    const connectionGeneration = deps.getConnectionGeneration?.(connection);
-    if (connectionGeneration && connectionGeneration !== scope.publicationGeneration) {
-      // OAuth may rotate this attempt's credentials during initialization. Only the
-      // generation bound to this exact connection can be adopted, without replacing a peer.
-      scope.publicationGeneration = connectionGeneration;
-      if (!(await deps.setMCPConnectionState(scope, record, retainedTtl, 'ifAbsent'))) {
-        throw new Error('MCP connection attempt was superseded');
-      }
-    }
-    const observer = observeMCPConnection(connection, scope, record, policy, deps);
-    if (
-      !(await withDeadline(observer.ready, signal).catch((error) => {
-        observer.stop();
-        throw error;
-      }))
-    ) {
-      observer.stop();
-      throw new Error('MCP connection could not be verified or its attempt was superseded');
-    }
-    return result;
-  } catch (error) {
+    Object.assign(record, admitted);
+    let connection: ObservedMCPConnection | undefined;
+    let verified = false;
     try {
-      await deps.setMCPConnectionState(scope, { ...record, state: 'error' }, retainedTtl);
-    } catch (publicationError) {
-      logger.warn(
-        '[MCP Connection Status] Could not publish attempt failure',
-        getSafeErrorMetadata(publicationError),
+      signal.throwIfAborted();
+      const resolution = await withDeadline<MCPReinitializeConfigResolution>(
+        deps.resolveConfig?.() ?? Promise.resolve({ serverConfig: params.serverConfig }),
+        signal,
       );
-    }
-    if (signal.aborted) {
-      return {
-        availableTools: null,
-        success: false,
-        message: `MCP server '${params.serverName}' connection timed out; try connecting again`,
-        failureReason: 'initialization_failed',
-        oauthRequired: false,
-        serverName: params.serverName,
-        oauthUrl: null,
-        tools: null,
-      };
-    }
-    throw error;
-  }
-}
-
-export function observeMCPConnection(
-  connection: ObservedMCPConnection,
-  scope: MCPConnectionStateScope,
-  initial: MCPConnectionStateRecord,
-  policy: MCPConnectionStatusPolicy,
-  store: MCPConnectionStateStore,
-  onStop?: () => void,
-): { ready: Promise<boolean>; stop: () => void } {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let epoch = 0;
-  let stopped = false;
-  let activeProbe: AbortController | undefined;
-  let publication: Promise<boolean> = Promise.resolve(true);
-  const interval = Math.floor(policy.leaseDurationMs / 3);
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    activeProbe?.abort();
-    clearTimeout(timer);
-    connection.removeListener('connectionChange', change);
-    connection.removeListener('disposed', disposed);
-    onStop?.();
-  };
-  const publish = (state: MCPConnectionStateRecord['state'], disposed = false) => {
-    const observedEpoch = ++epoch;
-    activeProbe?.abort();
-    clearTimeout(timer);
-    publication = publication
-      .then(async () => {
-        if (observedEpoch !== epoch || (stopped && !disposed)) return false;
-        let verified = state;
-        if (state === 'connected') {
-          const controller = new AbortController();
-          activeProbe = controller;
-          const signal = AbortSignal.any([AbortSignal.timeout(interval), controller.signal]);
-          try {
-            if (!(await withDeadline(connection.isConnected(signal, true), signal))) {
-              verified = 'error';
-            }
-          } catch {
-            verified = 'error';
-          } finally {
-            if (activeProbe === controller) activeProbe = undefined;
-          }
-          if (observedEpoch !== epoch || stopped) return false;
-        }
-        const current = await store.setMCPConnectionState(
-          scope,
-          {
-            ...initial,
-            state: verified,
-            explicitAttempt: false,
-            deadline:
-              state === 'connecting' ? Date.now() + policy.attemptTimeoutMs : initial.deadline,
-            ...(verified === 'connected' && { verifiedUntil: Date.now() + policy.leaseDurationMs }),
+      if (resolution.result) {
+        await withDeadline(setState(scope, { ...record, state: 'error' }, retainedTtl), signal);
+        return {
+          ...resolution.result,
+          connectionAttempt: projectMCPConnectionAttempt(
+            { ...record, state: 'error' },
+            scope.publicationGeneration,
+          ),
+        };
+      }
+      const serverConfig = resolution.serverConfig ?? params.serverConfig;
+      const configGeneration = getMCPToolCatalogGeneration(serverConfig, params.capabilityProfile);
+      if (configGeneration !== scope.configGeneration) {
+        scope.configGeneration = configGeneration;
+        if (
+          !(await withDeadline(setState(scope, { ...record, deadline }, retainedTtl, true), signal))
+        )
+          throw new Error('MCP connection attempt was superseded');
+      }
+      const result = await withDeadline(
+        deps.connect(
+          (value) => {
+            connection = value;
           },
-          (state === 'connecting' ? policy.attemptTimeoutMs : policy.leaseDurationMs) +
-            policy.failureRetentionMs,
+          signal,
+          serverConfig,
+        ),
+        signal,
+      );
+      if (result?.oauthRequired || result?.connectionDeferred) {
+        record.requiresOAuth = result.oauthRequired === true;
+        // OAuth has its own guarded flow and readiness reinitialization. A deferred
+        // chat-scoped connection likewise cannot be advertised as a verified transport.
+        await withDeadline(
+          setState(scope, { ...record, state: 'disconnected' }, retainedTtl),
+          signal,
         );
-        if (!current) stop();
-        return current && observedEpoch === epoch && (disposed || !stopped) && verified === state;
-      })
-      .catch((error) => {
-        logger.warn(
-          '[MCP Connection Status] Could not publish connection observation',
-          getSafeErrorMetadata(error),
+        return {
+          ...result,
+          connectionAttempt: projectMCPConnectionAttempt(
+            { ...record, state: 'disconnected' },
+            scope.publicationGeneration,
+          ),
+        };
+      }
+      if (!result?.success || !connection) {
+        await withDeadline(setState(scope, { ...record, state: 'error' }, retainedTtl), signal);
+        if (result?.success) throw new Error('MCP connection verification failed');
+        return (
+          result && {
+            ...result,
+            connectionAttempt: projectMCPConnectionAttempt(
+              { ...record, state: 'error' },
+              scope.publicationGeneration,
+            ),
+          }
         );
-        return false;
-      })
-      .finally(() => {
-        if (!stopped && observedEpoch === epoch && state === 'connected') {
-          timer = setTimeout(() => publish('connected'), interval);
-          timer.unref?.();
+      }
+      record.requiresOAuth = connection.usesOAuth?.() === true;
+      const connectionGeneration = deps.getConnectionGeneration?.(connection);
+      if (connectionGeneration && connectionGeneration !== scope.publicationGeneration) {
+        // OAuth may rotate this attempt's credentials during initialization. Only the
+        // generation bound to this exact connection can be adopted, without replacing a peer.
+        scope.publicationGeneration = connectionGeneration;
+        if (
+          !(await withDeadline(
+            setState(scope, { ...record, deadline }, retainedTtl, 'ifAbsent'),
+            signal,
+          ))
+        ) {
+          throw new Error('MCP connection attempt was superseded');
         }
-      });
-    return publication;
-  };
-  const change = (state: MCPConnectionStateRecord['state']) => publish(state);
-  const disposed = () => {
-    stop();
-    publish('disconnected', true);
-  };
-  connection.on('connectionChange', change);
-  connection.once('disposed', disposed);
-  return { ready: publish('connected'), stop };
+      }
+      if (!(await withDeadline(connection.isConnected(signal, true), signal))) {
+        throw new Error('MCP connection could not be verified');
+      }
+      verified = true;
+      const completed: MCPConnectionStateRecord = {
+        ...record,
+        state: 'connected',
+        verifiedUntil: Date.now() + policy.evidenceFreshnessMs,
+      };
+      if (!(await withDeadline(setState(scope, completed, retainedTtl), signal))) {
+        throw new MCPStatusUnavailableError('MCP connection attempt was superseded or expired');
+      }
+      const committed = await withDeadline(getState(scope), signal);
+      if (
+        !committed ||
+        committed.attemptId !== record.attemptId ||
+        committed.state !== 'connected'
+      ) {
+        throw new MCPStatusUnavailableError('MCP connection outcome could not be confirmed');
+      }
+      return {
+        ...result,
+        connectionAttempt: projectMCPConnectionAttempt(committed, scope.publicationGeneration),
+      };
+    } catch (error) {
+      try {
+        await withDeadline(
+          setState(
+            scope,
+            {
+              ...record,
+              state: 'error',
+              statusUnavailable:
+                error instanceof MCPStatusUnavailableError || (signal.aborted && verified),
+            },
+            retainedTtl,
+          ),
+          signal,
+        );
+      } catch (publicationError) {
+        logger.warn(
+          '[MCP Connection Status] Could not publish attempt failure',
+          getSafeErrorMetadata(publicationError),
+        );
+      }
+      if (error instanceof MCPStatusUnavailableError || (signal.aborted && verified))
+        return unavailableResult(params.serverName);
+      if (signal.aborted) {
+        return {
+          connectionAttempt: projectMCPConnectionAttempt(
+            { ...record, state: 'error' },
+            scope.publicationGeneration,
+          ),
+          availableTools: null,
+          success: false,
+          message: `MCP server '${params.serverName}' connection timed out; try connecting again`,
+          failureReason: 'initialization_failed',
+          oauthRequired: false,
+          serverName: params.serverName,
+          oauthUrl: null,
+          tools: null,
+        };
+      }
+      throw error;
+    }
+  } catch (error) {
+    if (error instanceof MCPStatusUnavailableError) return unavailableResult(params.serverName);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }

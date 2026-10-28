@@ -11,6 +11,7 @@ const {
 const {
   getBasePath,
   runMCPConnectionAttempt,
+  getUnavailableMCPServerStatus,
   resolveMCPReinitializeConfig,
   resolveMCPClientCapabilityProfile,
   getSafeErrorMetadata,
@@ -30,7 +31,6 @@ const {
   OAUTH_SESSION_COOKIE,
   mcpConfig: mcpSettings,
   getServerCustomUserVars,
-  hasCustomUserVars,
   requiresEphemeralUserConnection,
   MCPAuthenticationRejectedError,
   MCPAuthenticationRefreshError,
@@ -995,6 +995,7 @@ router.post(
       );
       const result = await runMCPConnectionAttempt(
         {
+          attemptId: req.body?.attemptId,
           userId: user.id,
           serverName,
           serverConfig,
@@ -1017,7 +1018,6 @@ router.post(
           connect: (connectionObserver, signal, resolvedServerConfig) =>
             reinitMCPServer({
               connectionObserver,
-              connectionStatusManagedExternally: true,
               signal,
               user,
               serverName,
@@ -1051,6 +1051,8 @@ router.post(
         failureReason,
         missingUserVars,
         connectionDeferred,
+        connectionAttempt,
+        statusUnavailable,
       } = result;
 
       let flowId;
@@ -1070,6 +1072,8 @@ router.post(
         failureReason,
         missingUserVars,
         connectionDeferred,
+        connectionAttempt,
+        statusUnavailable,
       });
     } catch (error) {
       if (
@@ -1138,15 +1142,7 @@ router.get('/connection/status', requireJwtAuth, configMiddleware, async (req, r
             logger.error(`[MCP Connection Status] ${message},`, error);
             return [
               serverName,
-              {
-                connectionState: 'error',
-                requiresOAuth: oauthServers.has(serverName),
-                ...(requiresEphemeralUserConnection(config) && { requestScoped: true }),
-                ...(requiresEphemeralUserConnection(config) &&
-                  hasCustomUserVars(config) && { configurationState: 'needs_configuration' }),
-                authorizationState: oauthServers.has(serverName) ? 'error' : 'not_required',
-                error: message,
-              },
+              getUnavailableMCPServerStatus(config, oauthServers.has(serverName)),
             ];
           }
         }),
@@ -1221,6 +1217,8 @@ router.get('/connection/status/:serverName', requireJwtAuth, configMiddleware, a
       success: true,
       serverName,
       connectionStatus: serverStatus.connectionState,
+      connectionAttempt: serverStatus.connectionAttempt,
+      statusUnavailable: serverStatus.statusUnavailable,
       requiresOAuth: serverStatus.requiresOAuth,
       requestScoped: serverStatus.requestScoped,
       configurationState: serverStatus.configurationState,

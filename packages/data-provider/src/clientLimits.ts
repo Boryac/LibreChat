@@ -6,6 +6,7 @@ const timeoutMs = z.number().int().positive().max(3_600_000).optional();
 export const clientLimitsSchema = z
   .object({
     refreshMs: timeoutMs,
+    mcpConnectMs: timeoutMs,
     ttsMs: timeoutMs,
     sharepointMs: timeoutMs,
     cloudfrontMs: timeoutMs,
@@ -17,6 +18,7 @@ export type TClientLimits = z.infer<typeof clientLimitsSchema>;
 
 export const DEFAULT_CLIENT_LIMITS: Required<TClientLimits> = {
   refreshMs: 30_000,
+  mcpConnectMs: 75_000,
   ttsMs: 60_000,
   sharepointMs: 5 * 60_000,
   cloudfrontMs: 15_000,

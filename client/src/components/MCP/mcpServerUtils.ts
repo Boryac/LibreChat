@@ -98,6 +98,8 @@ export function getStatusColor(
     return 'bg-status-info';
   }
 
+  if (status.statusUnavailable) return 'bg-status-neutral';
+
   // Connected: green (success)
   if (connectionState === 'connected') {
     return 'bg-status-success';
@@ -144,6 +146,12 @@ export function getStatusTextKey(
   if (requestScoped) {
     return 'com_nav_mcp_status_on_demand';
   }
+
+  if (status.statusUnavailable) return 'com_nav_mcp_status_unknown';
+  if (status.connectionAttempt && connectionState === 'connected')
+    return 'com_nav_mcp_status_verified';
+  if (status.connectionAttempt && connectionState === 'error')
+    return 'com_nav_mcp_status_last_failed';
 
   // Special case: disconnected but needs OAuth shows different text
   if (connectionState === 'disconnected' && requiresOAuth) {

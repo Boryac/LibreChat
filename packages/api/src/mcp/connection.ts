@@ -2802,7 +2802,6 @@ export class MCPConnection extends EventEmitter {
   /** Permanently tears down a connection that will never be reused. */
   public async dispose(): Promise<void> {
     this.isDisposed = true;
-    this.emit('disposed');
     this.requestAuthorization.closed = true;
     // Failed-init teardown must cancel pre-dispatch waits before joining requests.
     // Network responses and durable rejection admission keep their own drain barrier.

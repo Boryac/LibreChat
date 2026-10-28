@@ -307,7 +307,19 @@ export type ListRolesResponse = {
   offset?: number;
 };
 
+export interface MCPConnectionAttempt {
+  authorizationGeneration?: string;
+  attemptId: string;
+  state: 'connecting' | 'connected' | 'disconnected' | 'error';
+  startedAt?: number;
+  /** Remaining pending budget or success freshness, measured by the shared store. */
+  remainingMs: number;
+}
+
 export interface MCPServerStatus {
+  connectionAttempt?: MCPConnectionAttempt;
+  /** Current connectivity cannot be confirmed; this does not imply missing credentials. */
+  statusUnavailable?: boolean;
   requiresOAuth: boolean;
   /** The server connects only inside a chat request because its config reads BODY placeholders. */
   requestScoped?: boolean;

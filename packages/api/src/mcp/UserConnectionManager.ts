@@ -1,6 +1,5 @@
 import { logger } from '@librechat/data-schemas';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { MCPManagedConnectionObserver } from './status/types';
 import type { MCPClientCapabilityProfile } from './capabilities';
 import type * as t from './types';
 import {
@@ -136,10 +135,6 @@ function isUserConnectionKeyForUser(key: string, userId: string): boolean {
  * https://github.com/LibreChat-AI/LibreChat/discussions/8790
  */
 export abstract class UserConnectionManager {
-  constructor(
-    protected readonly onConnectionReady: MCPManagedConnectionObserver | undefined = undefined,
-  ) {}
-
   // Connections shared by all users.
   public appConnections: ConnectionsRepository | null = null;
   // Connections per userId -> serverName/capability profile -> connection
@@ -769,7 +764,6 @@ export abstract class UserConnectionManager {
       connectionTimeout,
       graphTokenResolver,
       ephemeralConnection = false,
-      connectionStatusManagedExternally = false,
       capabilityProfile = STANDARD_MCP_CAPABILITY_PROFILE,
       connectionTarget,
       directBearerRecoveryState = { attempted: false },
@@ -908,23 +902,6 @@ export abstract class UserConnectionManager {
             creationGuard,
           );
           this.assertCreationNotCancelled(creationGuard, userId, serverName);
-          if (
-            !ephemeralConnection &&
-            !connectionStatusManagedExternally &&
-            existingPublicationGeneration
-          ) {
-            await this.onConnectionReady?.({
-              connection,
-              userId,
-              serverName,
-              serverConfig: declaredConfig,
-              publicationGeneration: existingPublicationGeneration,
-              capabilityProfile,
-              created: false,
-              signal,
-            });
-          }
-          signal?.throwIfAborted();
           return connection;
         }
         logger.warn(`[MCP][User: ${userId}] Found disconnected connection object; cleaning up`);
@@ -1166,7 +1143,6 @@ export abstract class UserConnectionManager {
               connectionTimeout,
               graphTokenResolver,
               ephemeralConnection,
-              connectionStatusManagedExternally,
               capabilityProfile,
               connectionTarget,
               directBearerRecoveryState,
@@ -1200,19 +1176,6 @@ export abstract class UserConnectionManager {
         await this.assertToolPublicationLeaseCurrent(connection, userId, serverName, creationGuard);
       }
       this.assertCreationNotCancelled(creationGuard, userId, serverName);
-      signal?.throwIfAborted();
-      if (!ephemeralConnection && !connectionStatusManagedExternally && effectiveGeneration) {
-        await this.onConnectionReady?.({
-          connection,
-          userId,
-          serverName,
-          serverConfig: declaredConfig,
-          publicationGeneration: effectiveGeneration,
-          capabilityProfile,
-          created: true,
-          signal,
-        });
-      }
       signal?.throwIfAborted();
       return connection;
     } catch (error) {

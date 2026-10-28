@@ -325,7 +325,7 @@ export function buildLoginRedirectUrl(pathname?: string, search?: string, hash?:
 export const resendVerificationEmail = () => `${BASE_URL}/api/user/verify/resend`;
 
 export const mcpReinitialize = (serverName: string) =>
-  `${BASE_URL}/api/mcp/${serverName}/reinitialize`;
+  `${BASE_URL}/api/mcp/${encodeURIComponent(serverName)}/reinitialize`;
 export const mcpConnectionStatus = () => `${BASE_URL}/api/mcp/connection/status`;
 export const mcpAuthValues = (serverName: string) => {
   return `${BASE_URL}/api/mcp/${serverName}/auth-values`;

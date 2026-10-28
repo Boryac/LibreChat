@@ -4537,13 +4537,13 @@ export const configSchema = z.object({
       connectionStatus: z
         .object({
           attemptTimeoutMs: z.number().int().min(1000).max(300_000).default(60_000),
-          leaseDurationMs: z.number().int().min(3000).max(600_000).default(90_000),
-          failureRetentionMs: z.number().int().min(1000).max(86_400_000).default(600_000),
+          evidenceFreshnessMs: z.number().int().min(3000).max(600_000).default(90_000),
+          resultRetentionMs: z.number().int().min(1000).max(86_400_000).default(600_000),
         })
         .default({
           attemptTimeoutMs: 60_000,
-          leaseDurationMs: 90_000,
-          failureRetentionMs: 600_000,
+          evidenceFreshnessMs: 90_000,
+          resultRetentionMs: 600_000,
         }),
       allowedDomains: z.array(z.string()).optional(),
       allowedAddresses: allowedAddressesSchema,

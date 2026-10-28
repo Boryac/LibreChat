@@ -55,7 +55,6 @@ export * from './mcp/utils';
 export * from './mcp/status/attempt';
 export * from './mcp/status/types';
 export * from './mcp/status/read';
-export * from './mcp/status/observer';
 export * from './mcp/connectionStatus';
 export * from './mcp/domainValidation';
 export * from './mcp/context';

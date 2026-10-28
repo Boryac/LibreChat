@@ -1,4 +1,5 @@
 import type { MCPOptions, MCPServerUserInput } from '../mcp';
+import type { MCPConnectionAttempt } from './queries';
 
 /**
  * Base MCP Server interface
@@ -54,9 +55,14 @@ export type MCPReinitializeFailureReason =
   | 'unreachable'
   | 'missing_custom_user_vars'
   | 'oauth_required'
-  | 'initialization_failed';
+  | 'initialization_failed'
+  | 'status_unavailable';
+
+export type MCPReinitializeRequest = string | { serverName: string; attemptId: string };
 
 export interface MCPReinitializeResponse {
+  connectionAttempt?: MCPConnectionAttempt;
+  statusUnavailable?: boolean;
   success: boolean;
   message: string;
   serverName: string;

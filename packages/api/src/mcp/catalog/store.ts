@@ -182,18 +182,40 @@ local valid, generation = pcall(cjson.decode, rawGeneration)
 if not valid or generation['value'] ~= ARGV[2] then return 0 end
 local raw = redis.call('GET', KEYS[3])
 if ARGV[3] == 'ifAbsent' and raw then return 0 end
-if ARGV[8] ~= '' then
-  if not raw then return 0 end
-  local ok, current = pcall(cjson.decode, raw)
-  if not ok or current['value']['attemptId'] ~= ARGV[8] then return 0 end
-end
+local incoming = cjson.decode(ARGV[5])
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 if ARGV[3] == 'update' then
   if not raw then return 0 end
-  local ok, record = pcall(cjson.decode, raw)
-  if not ok or record['value']['attemptId'] ~= ARGV[4] then return 0 end
+  local ok, entry = pcall(cjson.decode, raw)
+  if not ok then return 0 end
+  local current = entry['value']
+  if current['attemptId'] ~= ARGV[4] or current['state'] ~= 'connecting' then return 0 end
+  if incoming['value']['state'] == 'connecting' then return 0 end
+  if incoming['value']['state'] ~= 'error' and now >= current['deadline'] then return 0 end
+  incoming['value']['startedAt'] = current['startedAt']
+  incoming['value']['deadline'] = current['deadline']
+  if incoming['value']['state'] == 'connected' then
+    incoming['value']['verifiedUntil'] = tonumber(ARGV[10])
+  end
+else
+  if incoming['value']['state'] ~= 'connecting' then return 0 end
+  if raw then
+    local ok, entry = pcall(cjson.decode, raw)
+    if ok and entry['value']['attemptId'] == ARGV[4] then return 0 end
+  end
+  local deadline = tonumber(ARGV[9])
+  if not deadline or now >= deadline then return 0 end
+  local previous = 0
+  if raw then
+    local ok, entry = pcall(cjson.decode, raw)
+    if ok then previous = entry['value']['startedAt'] or 0 end
+  end
+  incoming['value']['startedAt'] = math.max(now, previous + 1)
+  incoming['value']['deadline'] = deadline
 end
 ${legacyOwnershipCheck(4, 0)}
-redis.call('PSETEX', KEYS[3], ARGV[7], ARGV[5])
+redis.call('PSETEX', KEYS[3], ARGV[7], cjson.encode(incoming))
 return 1
 `;
 
@@ -680,14 +702,30 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
   }
 
   function connectionStateKey(scope: MCPConnectionStateScope): string {
-    return `status:mcp:{${encodeURIComponent(scope.userId)}:${encodeURIComponent(scope.serverName)}}:${encodeURIComponent(scope.configGeneration)}:${encodeURIComponent(scope.publicationGeneration)}`;
+    return `status:mcp:operation-v1:{${encodeURIComponent(scope.userId)}:${encodeURIComponent(scope.serverName)}}:${encodeURIComponent(scope.configGeneration)}:${encodeURIComponent(scope.publicationGeneration)}`;
   }
 
   async function getMCPConnectionState(
     scope: MCPConnectionStateScope,
   ): Promise<MCPConnectionStateRecord | null> {
     const cache = await getReadyCache();
-    const value = await cache.get(connectionStateKey(scope));
+    const value: unknown = sharedRedis()
+      ? JSON.parse(
+          String(
+            await deps.keyvRedisClient!.eval(
+              `
+          local raw = redis.call('GET', KEYS[1])
+          if not raw then return 'null' end
+          local entry = cjson.decode(raw)
+          local clock = redis.call('TIME')
+          entry['value']['serverNow'] = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+          return cjson.encode(entry['value'])
+        `,
+              { keys: [rawKey(connectionStateKey(scope))], arguments: [] },
+            ),
+          ),
+        )
+      : await cache.get(connectionStateKey(scope));
     if (
       !value ||
       typeof value !== 'object' ||
@@ -699,7 +737,9 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     const { attemptId, state, deadline } = value;
     const verifiedUntil = 'verifiedUntil' in value ? value.verifiedUntil : undefined;
     const requiresOAuth = 'requiresOAuth' in value ? value.requiresOAuth : undefined;
-    const explicitAttempt = 'explicitAttempt' in value ? value.explicitAttempt : undefined;
+    const statusUnavailable = 'statusUnavailable' in value ? value.statusUnavailable : undefined;
+    const startedAt = 'startedAt' in value ? value.startedAt : undefined;
+    const serverNow = sharedRedis() && 'serverNow' in value ? value.serverNow : Date.now();
     if (
       typeof attemptId !== 'string' ||
       !attemptId ||
@@ -710,7 +750,8 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
         state !== 'disconnected' &&
         state !== 'error') ||
       (requiresOAuth !== undefined && typeof requiresOAuth !== 'boolean') ||
-      (explicitAttempt !== undefined && typeof explicitAttempt !== 'boolean') ||
+      (statusUnavailable !== undefined && typeof statusUnavailable !== 'boolean') ||
+      (startedAt !== undefined && (typeof startedAt !== 'number' || !Number.isFinite(startedAt))) ||
       (verifiedUntil !== undefined &&
         (typeof verifiedUntil !== 'number' || !Number.isFinite(verifiedUntil)))
     )
@@ -719,9 +760,11 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       attemptId,
       state,
       deadline,
+      ...(typeof serverNow === 'number' && { serverNow }),
       ...(typeof verifiedUntil === 'number' && { verifiedUntil }),
       ...(typeof requiresOAuth === 'boolean' && { requiresOAuth }),
-      ...(typeof explicitAttempt === 'boolean' && { explicitAttempt }),
+      ...(typeof statusUnavailable === 'boolean' && { statusUnavailable }),
+      ...(typeof startedAt === 'number' && { startedAt }),
     };
   }
 
@@ -730,9 +773,26 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     record: MCPConnectionStateRecord,
     ttl: number,
     claim: boolean | 'ifAbsent' = false,
-    expectedAttemptId?: string,
   ): Promise<boolean> {
+    const scheduledAt = Date.now();
     const cache = await getReadyCache();
+    // Anchor deadlines before joining the write queue. Redis TIME at commit would
+    // otherwise restart an expired operation after a delayed lock/network write.
+    const serverTime = sharedRedis()
+      ? Number(
+          await deps.keyvRedisClient!.eval(
+            `
+      local clock = redis.call('TIME')
+      return tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+    `,
+            { keys: [], arguments: [] },
+          ),
+        )
+      : scheduledAt;
+    const elapsed = Date.now() - scheduledAt;
+    const admittedDeadline = serverTime + (record.deadline - scheduledAt) - elapsed;
+    const verifiedUntil =
+      serverTime + ((record.verifiedUntil ?? scheduledAt) - scheduledAt) - elapsed;
     return withUserQueue(
       scope.userId,
       scope.serverName,
@@ -743,8 +803,22 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
           if ((await cache.get(generationKey)) !== scope.publicationGeneration) return false;
           const current = await getMCPConnectionState(scope);
           if (claim === 'ifAbsent' && current) return false;
-          if (expectedAttemptId && current?.attemptId !== expectedAttemptId) return false;
-          if (!claim && current?.attemptId !== record.attemptId) return false;
+          const now = Date.now();
+          if (!claim) {
+            if (current?.attemptId !== record.attemptId || current.state !== 'connecting')
+              return false;
+            if (record.state === 'connecting') return false;
+            if (record.state !== 'error' && now >= current.deadline) return false;
+            record = { ...record, startedAt: current.startedAt, deadline: current.deadline };
+          } else {
+            if (
+              record.state !== 'connecting' ||
+              record.deadline <= now ||
+              current?.attemptId === record.attemptId
+            )
+              return false;
+            record = { ...record, startedAt: Math.max(now, (current?.startedAt ?? 0) + 1) };
+          }
           if ((await cache.set(stateKey, record, ttl)) === false)
             throw new Error('MCP connection state write rejected');
           return true;
@@ -763,7 +837,9 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
             JSON.stringify({ value: record, expires }),
             String(expires),
             String(ttl),
-            expectedAttemptId ?? '',
+            String(Date.now()),
+            String(admittedDeadline),
+            String(verifiedUntil),
           ],
         });
         if (Number(result) < 0) throw new Error('MCP connection state write lost lock ownership');

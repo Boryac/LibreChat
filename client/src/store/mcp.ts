@@ -1,7 +1,10 @@
 import { atom } from 'jotai';
 import { atomFamily, atomWithStorage } from 'jotai/utils';
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
+import type { MCPConnectResult } from '~/hooks/MCP/outcome';
 import { createTabIsolatedStorage } from './jotai-utils';
+
+export const mcpConnectionResultsAtom = atom<Record<string, MCPConnectResult>>({});
 
 /**
  * Tab-isolated storage for MCP values — prevents cross-tab sync so that

@@ -3475,7 +3475,8 @@ describe('MCP Routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.connectionStatus.server1).toEqual(
         expect.objectContaining({
-          connectionState: 'error',
+          connectionState: 'disconnected',
+          statusUnavailable: true,
           requestScoped: true,
           configurationState: 'needs_configuration',
         }),

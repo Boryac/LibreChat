@@ -529,7 +529,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       require('~/models').findToken.mockReset();
     });
 
-    it('should return app connection state when available', async () => {
+    it('does not present a replica-local app transport as a shared Connect result', async () => {
       const appConnections = new Map([
         [
           mockServerName,
@@ -553,12 +553,13 @@ describe('tests for the new helper functions used by the MCP connection status e
 
       expect(result).toEqual({
         requiresOAuth: false,
-        connectionState: 'connected',
+        connectionState: 'disconnected',
+        statusUnavailable: true,
         authorizationState: 'not_required',
       });
     });
 
-    it('should fallback to user connection state when app connection not available', async () => {
+    it('does not present a replica-local user transport as a shared Connect result', async () => {
       const appConnections = new Map();
       const userConnections = new Map([
         [
@@ -582,7 +583,8 @@ describe('tests for the new helper functions used by the MCP connection status e
 
       expect(result).toEqual({
         requiresOAuth: false,
-        connectionState: 'connecting',
+        connectionState: 'disconnected',
+        statusUnavailable: true,
         authorizationState: 'not_required',
       });
     });
@@ -604,6 +606,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       expect(result).toEqual({
         requiresOAuth: false,
         connectionState: 'disconnected',
+        statusUnavailable: true,
         authorizationState: 'not_required',
       });
     });
@@ -662,7 +665,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       expect(configured.configurationState).toBe('configured');
     });
 
-    it('should prioritize app connection over user connection', async () => {
+    it('keeps absent operation evidence neutral regardless of local transport priority', async () => {
       const appConnections = new Map([
         [
           mockServerName,
@@ -694,7 +697,8 @@ describe('tests for the new helper functions used by the MCP connection status e
 
       expect(result).toEqual({
         requiresOAuth: false,
-        connectionState: 'connected',
+        connectionState: 'disconnected',
+        statusUnavailable: true,
         authorizationState: 'not_required',
       });
     });
@@ -1061,6 +1065,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       expect(result).toEqual({
         requiresOAuth: false,
         connectionState: 'disconnected',
+        statusUnavailable: true,
         authorizationState: 'not_required',
       });
       expect(mockFlowManager.getFlowState).not.toHaveBeenCalled();
@@ -1452,6 +1457,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       expect(result).toEqual({
         requiresOAuth: false,
         connectionState: 'disconnected',
+        statusUnavailable: true,
         authorizationState: 'not_required',
       });
 
