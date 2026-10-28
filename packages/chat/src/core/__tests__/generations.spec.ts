@@ -12,6 +12,7 @@ import type {
   ChatStream,
   ChatStatus,
   ChatTransport,
+  ChatSendResult,
   ChatConnection,
   ChatAbortResult,
 } from '../types';
@@ -3445,6 +3446,27 @@ describe('Chat lost-start resolution', () => {
     await drive(h);
 
     expect((await h.chat.stop()).status).toBe(expected);
+  });
+
+  it('after the second of two starts under `new` answers late, the first is still owed', async () => {
+    const h = createHarness({ id: 'new' });
+    const answers: Array<(result: ChatSendResult) => void> = [];
+    h.transport.sendMessages.mockImplementation(
+      () =>
+        new Promise<ChatSendResult>((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    for (const text of ['Hi', 'Again']) {
+      const sent = h.chat.sendMessage({ parts: [{ type: 'text', text }] });
+      await flush();
+      expect((await h.chat.stop()).status).toBe('unaddressable');
+      await sent;
+    }
+    answers[1]?.({ status: 'settled', conversationId: 'convo-8', generationProtocolVersion: 2 });
+    await flush();
+
+    expect((await h.chat.stop()).status).toBe('unaddressable');
   });
 
   it('after the cancelled start answers late that the server already finished it', async () => {

@@ -826,7 +826,11 @@ export class Chat {
   /** The generation a restored pause belongs to, which a reattachment to it continues. */
   private restored?: { createdAt: number; generation: Generation };
   /** A start that reached the transport and lost its response, with nothing to address it by. */
-  private unaddressed?: ActiveRequest;
+  /**
+   * Starts that reached the transport and lost their response, with nothing to address them by,
+   * oldest first. Each stays the caller's to stop until an answer resolves that start itself.
+   */
+  private readonly lostStarts = new Set<ActiveRequest>();
   private readonly decisions = new Map<string, Agents.ToolApprovalResolution>();
   /** Pauses already resumed, whose replay by a reattached stream is stale. */
   private readonly resumed = new Set<string>();
@@ -1331,14 +1335,32 @@ export class Chat {
     );
   }
 
+  /** The newest start still lost, other than `except`, whose failure the chat keeps reporting. */
+  private newestLostStart(except?: ActiveRequest): ActiveRequest | undefined {
+    let newest: ActiveRequest | undefined;
+    for (const lost of this.lostStarts) {
+      if (lost !== except) {
+        newest = lost;
+      }
+    }
+    return newest;
+  }
+
+  /** Whether any start is still lost, which only the host's own abort can reach. */
+  private get unaddressed(): boolean {
+    return this.lostStarts.size > 0;
+  }
+
   /**
    * Clears a lost start the server's answer for its conversation covers: one generation runs per
    * conversation, so the answer owns or superseded it. A start sent under `new` created a
    * conversation of its own, which no other answer covers, so it stays the caller's to stop.
    */
   private releaseLostStart(): void {
-    if (this.unaddressed?.sentUnder !== Constants.NEW_CONVO) {
-      this.unaddressed = undefined;
+    for (const lost of this.lostStarts) {
+      if (lost.sentUnder !== Constants.NEW_CONVO) {
+        this.lostStarts.delete(lost);
+      }
     }
   }
 
@@ -1347,9 +1369,7 @@ export class Chat {
    * its own, and the failure it reported resolves unless a newer turn owns the chat.
    */
   private resolveLostStart(active: ActiveRequest): void {
-    if (this.unaddressed === active) {
-      this.unaddressed = undefined;
-    }
+    this.lostStarts.delete(active);
     const failed = active.disconnected;
     if (!this.disposed && !this.active && failed && this.error === failed) {
       this.init.state.error = undefined;
@@ -2242,7 +2262,7 @@ export class Chat {
         };
       } else if (active.sent && !active.generation.stopped) {
         /** The start may have reached the server, which answered nothing this chat can address. */
-        this.unaddressed = active;
+        this.lostStarts.add(active);
       }
     }
     /**
@@ -2269,7 +2289,7 @@ export class Chat {
     const { responseId, responseUnknown, responseless, conversationId } = active.generation;
     const named = conversationId !== Constants.NEW_CONVO ? conversationId : undefined;
     /** A lost start still owed its own abort keeps the failure it reported. */
-    const lost = this.unaddressed && this.unaddressed !== active ? this.unaddressed : undefined;
+    const lost = this.newestLostStart(active);
     this.publish(
       { ...outcome, conversationId: named },
       responseId,
