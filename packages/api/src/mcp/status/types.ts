@@ -13,6 +13,7 @@ export interface MCPConnectionStateRecord {
   state: MCPServerStatus['connectionState'];
   deadline: number;
   verifiedUntil?: number;
+  requiresOAuth?: boolean;
 }
 
 export interface MCPConnectionStateStore {
@@ -23,6 +24,6 @@ export interface MCPConnectionStateStore {
     scope: MCPConnectionStateScope,
     record: MCPConnectionStateRecord,
     ttl: number,
-    claim?: boolean,
+    claim?: boolean | 'ifAbsent',
   ) => Promise<boolean>;
 }

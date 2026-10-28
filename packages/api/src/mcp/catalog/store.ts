@@ -181,7 +181,8 @@ if not rawGeneration then return 0 end
 local valid, generation = pcall(cjson.decode, rawGeneration)
 if not valid or generation['value'] ~= ARGV[2] then return 0 end
 local raw = redis.call('GET', KEYS[3])
-if ARGV[3] ~= 'claim' then
+if ARGV[3] == 'ifAbsent' and raw then return 0 end
+if ARGV[3] == 'update' then
   if not raw then return 0 end
   local ok, record = pcall(cjson.decode, raw)
   if not ok or record['value']['attemptId'] ~= ARGV[4] then return 0 end
@@ -692,6 +693,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       return null;
     const { attemptId, state, deadline } = value;
     const verifiedUntil = 'verifiedUntil' in value ? value.verifiedUntil : undefined;
+    const requiresOAuth = 'requiresOAuth' in value ? value.requiresOAuth : undefined;
     if (
       typeof attemptId !== 'string' ||
       !attemptId ||
@@ -701,6 +703,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
         state !== 'connected' &&
         state !== 'disconnected' &&
         state !== 'error') ||
+      (requiresOAuth !== undefined && typeof requiresOAuth !== 'boolean') ||
       (verifiedUntil !== undefined &&
         (typeof verifiedUntil !== 'number' || !Number.isFinite(verifiedUntil)))
     )
@@ -710,6 +713,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       state,
       deadline,
       ...(typeof verifiedUntil === 'number' && { verifiedUntil }),
+      ...(typeof requiresOAuth === 'boolean' && { requiresOAuth }),
     };
   }
 
@@ -717,7 +721,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     scope: MCPConnectionStateScope,
     record: MCPConnectionStateRecord,
     ttl: number,
-    claim = false,
+    claim: boolean | 'ifAbsent' = false,
   ): Promise<boolean> {
     const cache = await getReadyCache();
     return withUserQueue(
@@ -729,6 +733,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
         if (!sharedRedis()) {
           if ((await cache.get(generationKey)) !== scope.publicationGeneration) return false;
           const current = await getMCPConnectionState(scope);
+          if (claim === 'ifAbsent' && current) return false;
           if (!claim && current?.attemptId !== record.attemptId) return false;
           if ((await cache.set(stateKey, record, ttl)) === false)
             throw new Error('MCP connection state write rejected');
@@ -736,12 +741,14 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
         }
         if (!fence) throw new Error('MCP connection state write requires lock ownership');
         const expires = Date.now() + ttl;
+        let mode = claim ? 'claim' : 'update';
+        if (claim === 'ifAbsent') mode = 'ifAbsent';
         const result = await deps.keyvRedisClient!.eval(SET_CONNECTION_STATE_SCRIPT, {
           keys: ownershipKeys(fence, rawKey(generationKey), rawKey(stateKey)),
           arguments: [
             fence.token,
             scope.publicationGeneration,
-            claim ? 'claim' : 'update',
+            mode,
             record.attemptId,
             JSON.stringify({ value: record, expires }),
             String(expires),

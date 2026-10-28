@@ -26,6 +26,7 @@ export const DEFAULT_MCP_CONNECTION_STATUS_POLICY: MCPConnectionStatusPolicy = {
 
 export interface ObservedMCPConnection {
   isConnected: (signal?: AbortSignal, force?: boolean) => Promise<boolean>;
+  usesOAuth?: () => boolean;
   on: (
     event: 'connectionChange',
     listener: (state: MCPConnectionStateRecord['state']) => void,
@@ -80,6 +81,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
   },
   deps: MCPConnectionStateStore & {
     getGeneration: () => Promise<string | undefined>;
+    getConnectionGeneration?: (connection: ObservedMCPConnection) => string | undefined;
     resolveConfig?: () => Promise<MCPReinitializeConfigResolution>;
     connect: (
       capture: (connection: ObservedMCPConnection) => void,
@@ -142,6 +144,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
       signal,
     );
     if (result?.oauthRequired || result?.connectionDeferred) {
+      record.requiresOAuth = result.oauthRequired === true;
       // OAuth has its own guarded flow and readiness reinitialization. A deferred
       // chat-scoped connection likewise cannot be advertised as a verified transport.
       await deps.setMCPConnectionState(scope, { ...record, state: 'disconnected' }, retainedTtl);
@@ -151,6 +154,16 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
       await deps.setMCPConnectionState(scope, { ...record, state: 'error' }, retainedTtl);
       if (result?.success) throw new Error('MCP connection verification failed');
       return result;
+    }
+    record.requiresOAuth = connection.usesOAuth?.() === true;
+    const connectionGeneration = deps.getConnectionGeneration?.(connection);
+    if (connectionGeneration && connectionGeneration !== scope.publicationGeneration) {
+      // OAuth may rotate this attempt's credentials during initialization. Only the
+      // generation bound to this exact connection can be adopted, without replacing a peer.
+      scope.publicationGeneration = connectionGeneration;
+      if (!(await deps.setMCPConnectionState(scope, record, retainedTtl, 'ifAbsent'))) {
+        throw new Error('MCP connection attempt was superseded');
+      }
     }
     const observer = observeConnection(connection, scope, record, policy, deps);
     if (
@@ -164,7 +177,14 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
     }
     return result;
   } catch (error) {
-    await deps.setMCPConnectionState(scope, { ...record, state: 'error' }, retainedTtl);
+    try {
+      await deps.setMCPConnectionState(scope, { ...record, state: 'error' }, retainedTtl);
+    } catch (publicationError) {
+      logger.warn(
+        '[MCP Connection Status] Could not publish attempt failure',
+        getSafeErrorMetadata(publicationError),
+      );
+    }
     if (signal.aborted) {
       return {
         availableTools: null,

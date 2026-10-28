@@ -1,5 +1,5 @@
+import type { MCPConnectionStateStore, MCPConnectionStateRecord } from './types';
 import type { MCPClientCapabilityProfile } from '../capabilities';
-import type { MCPConnectionStateStore } from './types';
 import type { ParsedServerConfig } from '../types';
 import { STANDARD_MCP_CAPABILITY_PROFILE } from '../capabilities';
 import { getMCPToolCatalogGeneration } from '../toolsChanged';
@@ -14,7 +14,7 @@ export async function readMCPConnectionObservation(
   deps: Pick<MCPConnectionStateStore, 'getMCPConnectionState'> & {
     getGeneration: () => Promise<string | undefined>;
   },
-) {
+): Promise<{ record: MCPConnectionStateRecord | null; generation: string | undefined }> {
   const generation = await deps.getGeneration();
   const record = generation
     ? await deps.getMCPConnectionState({

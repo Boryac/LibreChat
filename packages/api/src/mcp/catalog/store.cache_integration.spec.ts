@@ -147,6 +147,19 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     };
     expect(await owner.setMCPConnectionState(scope, pending, 10000, true)).toBe(true);
     expect(await otherReplica.getMCPConnectionState(scope)).toEqual(pending);
+    expect(
+      await owner.setMCPConnectionState(
+        scope,
+        { ...pending, attemptId: 'late-adoption' },
+        10000,
+        'ifAbsent',
+      ),
+    ).toBe(false);
+    expect(
+      await createStore(false, undefined, `${prefix}-other-deployment`).getMCPConnectionState(
+        scope,
+      ),
+    ).toBeNull();
     const connected = { ...pending, state: 'connected' as const, verifiedUntil: Date.now() + 5000 };
     expect(await owner.setMCPConnectionState(scope, connected, 10000)).toBe(true);
     expect(await otherReplica.getMCPConnectionState(scope)).toEqual(connected);
@@ -159,7 +172,13 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
       ),
     ).toBe(true);
     expect(await owner.setMCPConnectionState(scope, connected, 10000)).toBe(false);
-    await owner.invalidateCachedTools({ userId, serverName });
+    // Simulate the authorization generation committed by another replica.
+    await redis.set(
+      generationKey,
+      JSON.stringify({ value: 'new-authorization-generation' }),
+      'PX',
+      10000,
+    );
     expect(
       await otherReplica.setMCPConnectionState(
         scope,

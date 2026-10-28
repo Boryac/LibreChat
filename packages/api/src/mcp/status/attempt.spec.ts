@@ -38,7 +38,7 @@ function fixture() {
       scope: MCPConnectionStateScope,
       value: MCPConnectionStateRecord,
       ttl: number,
-      claim?: boolean,
+      claim?: boolean | 'ifAbsent',
     ) => {
       observedScope = scope;
       const accepted = await store.setMCPConnectionState(scope, value, ttl, claim);
@@ -159,6 +159,49 @@ describe('verified MCP connection attempts', () => {
     expect(result).toMatchObject({ success: false });
     expect(f.connection.listenerCount('connectionChange')).toBe(0);
     expect(f.observations[f.observations.length - 1].state).toBe('error');
+  });
+
+  it('accepts the generation bound to credentials rotated by this exact connection', async () => {
+    const f = fixture();
+    let rotated: string | undefined;
+    const connect = async (capture: (value: ObservedMCPConnection) => void) => {
+      rotated = await f.store.invalidateCachedTools(f.params);
+      capture(f.connection);
+      return { success: true };
+    };
+    await expect(
+      runMCPConnectionAttempt(f.params, {
+        ...f.deps,
+        connect,
+        getConnectionGeneration: () => rotated,
+      }),
+    ).resolves.toEqual({ success: true });
+    expect(f.scope().publicationGeneration).toBe(rotated);
+    f.connection.emit('disposed');
+  });
+  it('does not adopt rotated credentials over another active attempt', async () => {
+    const f = fixture();
+    let rotated: string | undefined;
+    const connect = async (capture: (value: ObservedMCPConnection) => void) => {
+      rotated = await f.store.invalidateCachedTools(f.params);
+      await f.store.setMCPConnectionState(
+        { ...f.scope(), publicationGeneration: rotated! },
+        { attemptId: 'peer', state: 'connecting', deadline: Date.now() + 1000 },
+        10000,
+        true,
+      );
+      capture(f.connection);
+      return { success: true };
+    };
+    await expect(
+      runMCPConnectionAttempt(f.params, {
+        ...f.deps,
+        connect,
+        getConnectionGeneration: () => rotated,
+      }),
+    ).rejects.toThrow('superseded');
+    expect((await f.store.getMCPConnectionState(f.scope()))?.attemptId).toBe('peer');
+    f.connection.emit('disposed');
   });
 
   it('keeps user and config scopes isolated', async () => {

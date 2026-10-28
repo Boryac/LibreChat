@@ -66,7 +66,6 @@ export async function getMCPServerConnectionStatus<Context>(
   const configuredOAuth = oauthServers.has(serverName);
   const liveConnectionOAuth = connection?.usesOAuth?.() === true;
   const runtimeOAuthCandidate = canDetectMCPRuntimeOAuth(config);
-  const effectiveOAuth = configuredOAuth || liveConnectionOAuth;
   const requestScoped = requiresEphemeralUserConnection(config);
   const configurationState = requestScoped
     ? await deps.getUserConfigurationState(serverName, config, runtimeContext)
@@ -74,17 +73,18 @@ export async function getMCPServerConnectionStatus<Context>(
 
   const observation = requestScoped ? null : await deps.getSharedState(config);
   const shared = observation?.record;
+  const effectiveOAuth = configuredOAuth || liveConnectionOAuth || shared?.requiresOAuth === true;
   const connectionGeneration = connection && deps.getConnectionGeneration(connection);
   const staleGeneration =
     connectionGeneration != null &&
     observation?.generation != null &&
     connectionGeneration !== observation.generation;
-  const sharedState =
-    shared?.state === 'connecting' && shared.deadline <= Date.now()
-      ? 'error'
-      : shared?.state === 'connected' && (shared.verifiedUntil ?? 0) <= Date.now()
-        ? 'disconnected'
-        : shared?.state;
+  let sharedState = shared?.state;
+  if (shared?.state === 'connecting' && shared.deadline <= Date.now()) {
+    sharedState = 'error';
+  } else if (shared?.state === 'connected' && (shared.verifiedUntil ?? 0) <= Date.now()) {
+    sharedState = 'disconnected';
+  }
   const baseConnectionState =
     sharedState ??
     (isStaleOrDoNotExist || staleGeneration

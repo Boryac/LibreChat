@@ -85,6 +85,7 @@ test('Connect reports verified success or failure consistently across replicas',
     await expect
       .soft(card)
       .toHaveAttribute('aria-label', 'E2E Connection State - Error', { timeout: 1000 });
+    await expect(page.getByText('Failed to initialize MCP server', { exact: true })).toBeVisible();
     await page.screenshot({ path: info.outputPath('failed.png'), animations: 'disabled' });
 
     await mode('success');
@@ -99,6 +100,25 @@ test('Connect reports verified success or failure consistently across replicas',
       .soft(card)
       .toHaveAttribute('aria-label', 'E2E Connection State - Connected', { timeout: 1000 });
     await page.screenshot({ path: info.outputPath('retry-succeeded.png'), animations: 'disabled' });
+
+    await mode('hold');
+    const timedOut = page.waitForResponse((r) =>
+      r.url().endsWith(`/api/mcp/${SERVER}/reinitialize`),
+    );
+    await card.hover();
+    await card.getByRole('button', { name: 'Reconnect', exact: true }).click();
+    const timeoutResponse = await timedOut;
+    if (timeoutResponse.ok())
+      expect(await timeoutResponse.json()).toMatchObject({ success: false });
+    for (const index of [1, 2]) {
+      await expect.poll(async () => (await status(index)).connectionState).toBe('error');
+    }
+    await expect(card).toHaveAttribute('aria-label', 'E2E Connection State - Error');
+    await page.screenshot({ path: info.outputPath('timeout.png'), animations: 'disabled' });
+    await mode('success');
+    for (const index of [1, 2]) {
+      expect((await status(index)).connectionState).toBe('error');
+    }
   } finally {
     await mode('success');
   }

@@ -1003,6 +1003,8 @@ router.post(
         },
         {
           getGeneration: () => getMCPToolsCacheGeneration({ userId: user.id, serverName }),
+          getConnectionGeneration: (connection) =>
+            mcpManager.getToolPublicationGeneration(connection),
           resolveConfig: () =>
             resolveMCPReinitializeConfig(
               getMCPServersRegistry(),

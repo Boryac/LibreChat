@@ -37,6 +37,14 @@ describe('shared MCP connection status', () => {
       ).toMatchObject({ connectionState: state });
     },
   );
+  it('preserves runtime-detected OAuth actions on a replica without the connection', async () => {
+    const deps = dependencies({ ...observation('connected'), requiresOAuth: true });
+    expect(await getMCPServerConnectionStatus(params, deps)).toMatchObject({
+      requiresOAuth: true,
+      connectionState: 'connected',
+      authorizationState: 'authorized',
+    });
+  });
   it('turns an abandoned pending attempt into Error', async () => {
     const record = { ...observation('connecting'), deadline: Date.now() - 1 };
     expect(await getMCPServerConnectionStatus(params, dependencies(record))).toMatchObject({
