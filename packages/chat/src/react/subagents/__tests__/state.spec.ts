@@ -2,7 +2,6 @@
  * @jest-environment jsdom
  */
 import React from 'react';
-import { TextEncoder } from 'node:util';
 import { ContentTypes } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
@@ -22,9 +21,6 @@ import {
   takeRegisteredSubagentProgressKeys,
   useSubagentProgress,
 } from '../state';
-
-/** jsdom has no TextEncoder; the reducer measures payloads with it. */
-Object.assign(globalThis, { TextEncoder });
 
 const update = (overrides: Partial<SubagentUpdateEvent> = {}): SubagentUpdateEvent => ({
   runId: 'root-run',

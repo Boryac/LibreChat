@@ -1,7 +1,12 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
 import { ContentTypes, QueryKeys, StepEvents } from 'librechat-data-provider';
+import { createStore, useAtomValue, useSetAtom, Provider as JotaiProvider } from 'jotai';
+import type { ActiveSubagentPanel } from '../state';
+import type { StreamHost } from '../../stream/host';
 import {
   reduceSubagentProgress,
   closeParentSubagentProgress,
@@ -9,10 +14,10 @@ import {
   subagentProgressByToolCallId,
   subagentProgressKey,
   takeRegisteredSubagentProgressKeys,
-} from '@librechat/chat/react';
-import type { ActiveSubagentPanel } from '@librechat/chat/react';
-import useSubagentActivityStream from './useSubagentActivityStream';
-import { IsolatedAtomStore } from 'test/harness';
+} from '../state';
+import { createSSETransport } from '../../../core/transport';
+import { StreamHostProvider } from '../../stream/host';
+import { useSubagentActivityStream } from '../stream';
 
 type Listener = (event: MessageEvent) => void;
 type MockStream = {
@@ -40,6 +45,7 @@ jest.mock('sse.js', () => ({
         listeners[type] = listener;
       },
       close: stream.close,
+      stream: jest.fn(),
     };
   }),
 }));
@@ -55,9 +61,14 @@ jest.mock('@tanstack/react-query', () => ({
   useQueryClient: () => mockQueryClient,
 }));
 
-jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ token: 'token-1', isAuthenticated: true }),
-}));
+const host: StreamHost = {
+  useResumableServices: () => () => {
+    throw new Error('the activity feed attaches without a resumable binding');
+  },
+  useLegacyStream: () => undefined,
+  useTransport: () => transport,
+};
+const transport = createSSETransport({ token: 'token-1' });
 
 const selection: ActiveSubagentPanel = {
   host: 'conversation',
@@ -71,9 +82,15 @@ const selection: ActiveSubagentPanel = {
   durable: { threadId: 'child/thread', taskId: 'task?1' },
 };
 
-const wrapper = ({ children }: { children: React.ReactNode }) => (
-  <IsolatedAtomStore>{children}</IsolatedAtomStore>
-);
+function Wrapper({ children }: { children: React.ReactNode }) {
+  const [store] = React.useState(createStore);
+  return (
+    <JotaiProvider store={store}>
+      <StreamHostProvider host={host}>{children}</StreamHostProvider>
+    </JotaiProvider>
+  );
+}
+const wrapper = Wrapper;
 
 describe('useSubagentActivityStream', () => {
   beforeEach(() => {
@@ -735,7 +752,9 @@ describe('useSubagentActivityStream', () => {
     jest.useFakeTimers();
     const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
 
-    act(() => streams[0]?.emit('error', {}));
+    act(() => {
+      streams[0]?.emit('error', {});
+    });
     expect(streams[0]?.close).toHaveBeenCalledTimes(1);
     expect(streams).toHaveLength(1);
 
@@ -751,7 +770,9 @@ describe('useSubagentActivityStream', () => {
     jest.useFakeTimers();
     const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
 
-    act(() => streams[0]?.emit('error', {}));
+    act(() => {
+      streams[0]?.emit('error', {});
+    });
     act(() => jest.advanceTimersByTime(500));
     expect(streams).toHaveLength(2);
 
@@ -802,7 +823,7 @@ describe('useSubagentActivityStream', () => {
 
 it('treats content watermarks as invalidation only after the subscribed ready boundary', () => {
   const { result } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
-  const stream = streams.at(-1)!;
+  const stream = streams[streams.length - 1];
   expect(result.current.isReady).toBe(false);
   act(() => stream.emit('message', { ready: true, contentRecovery: true }));
   expect(result.current.isReady).toBe(true);
@@ -831,7 +852,7 @@ it('treats content watermarks as invalidation only after the subscribed ready bo
 it('skips already committed content notifications but still refreshes a newer revision or sequence', () => {
   mockGetQueryData.mockReturnValue({ revision: 3, throughSequence: 118 });
   const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
-  const stream = streams.at(-1)!;
+  const stream = streams[streams.length - 1];
   mockInvalidateQueries.mockClear();
   const notify = (revision: number, throughSequence: number) =>
     act(() =>

@@ -19,6 +19,7 @@ import {
   subagentControlStateKey,
   subagentProgressKey,
   useSubagentProgress,
+  useSubagentActivityStream,
 } from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
@@ -54,7 +55,6 @@ import {
   readableSubagentType,
   useParentAuthor,
 } from './author';
-import useSubagentActivityStream from '~/data-provider/Subagents/useSubagentActivityStream';
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';

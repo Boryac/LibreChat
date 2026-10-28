@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
+import type { ChatTransport, TSubmission } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { TSubmission } from 'librechat-data-provider';
 import type { ResumableHost, ResumableRun } from '../../core';
 import type { ChatContract } from '../chat/contract';
 
@@ -44,6 +44,11 @@ export interface StreamHost {
     isAddedRequest: boolean,
     runIndex: number,
   ): void;
+  /**
+   * The signed-in user's stream transport, or `null` before sign-in, for feeds outside a chat
+   * turn such as a subagent's activity. Changes when the token does.
+   */
+  useTransport(): ChatTransport | null;
 }
 
 const StreamHostContext = createContext<StreamHost | null>(null);

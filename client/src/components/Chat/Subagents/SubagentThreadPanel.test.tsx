@@ -128,9 +128,9 @@ jest.mock('~/data-provider', () => ({
   }),
 }));
 
-jest.mock('~/data-provider/Subagents/useSubagentActivityStream', () => ({
-  __esModule: true,
-  default: (...args: unknown[]) => mockUseSubagentActivityStream(...args),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSubagentActivityStream: (...args: unknown[]) => mockUseSubagentActivityStream(...args),
 }));
 
 jest.mock('~/hooks', () => ({

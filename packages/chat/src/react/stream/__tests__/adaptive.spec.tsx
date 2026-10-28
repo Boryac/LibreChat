@@ -18,6 +18,7 @@ const host: StreamHost = {
     throw new Error('the resumable binding is replaced in this spec');
   },
   useLegacyStream,
+  useTransport: () => null,
 };
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (

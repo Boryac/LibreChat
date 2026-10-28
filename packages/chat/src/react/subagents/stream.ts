@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { SSE } from 'sse.js';
 import { atomFamily, selectAtom } from 'jotai/utils';
 import { useQueryClient } from '@tanstack/react-query';
 import { atom, useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { QueryKeys, StepEvents, apiBaseUrl } from 'librechat-data-provider';
+import type {
+  ChatEvent,
+  SubagentUpdateEvent,
+  SubagentTaskContentSnapshot,
+} from 'librechat-data-provider';
+import type { ActiveSubagentPanel } from './state';
 import {
   closeParentSubagentProgress,
   reduceSubagentProgress,
@@ -12,10 +17,8 @@ import {
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   subagentProgressKey,
-} from '@librechat/chat/react';
-import type { SubagentTaskContentSnapshot, SubagentUpdateEvent } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '@librechat/chat/react';
-import { useAuthContext } from '~/hooks/AuthContext';
+} from './state';
+import { useStreamHost } from '../stream/host';
 
 type ActivityEnvelope = {
   event?: unknown;
@@ -23,7 +26,6 @@ type ActivityEnvelope = {
   final?: unknown;
   subagentActivity?: unknown;
   droppedCount?: unknown;
-  ready?: unknown;
 };
 
 const contentReady = atomFamily((_key: string) => atom(false));
@@ -46,12 +48,16 @@ const isSubagentUpdate = (value: unknown): value is SubagentUpdateEvent => {
   );
 };
 
-/** Replay-then-live enhancement for the selected durable child; the durable query remains canonical. */
-export default function useSubagentActivityStream(
+/**
+ * Replay-then-live enhancement for the selected durable child; the durable query remains
+ * canonical. The feed attaches through the host's transport, which owns the connection,
+ * framing and token refresh.
+ */
+export function useSubagentActivityStream(
   selection: ActiveSubagentPanel,
   enabled = true,
 ): { isReady: boolean } {
-  const { token, isAuthenticated } = useAuthContext();
+  const transport = useStreamHost().useTransport();
   const queryClient = useQueryClient();
   const key = subagentProgressKey(
     selection.parentMessageId,
@@ -120,8 +126,7 @@ export default function useSubagentActivityStream(
       threadId == null ||
       taskId == null ||
       !enabled ||
-      !isAuthenticated ||
-      token == null
+      transport == null
     ) {
       return;
     }
@@ -138,7 +143,7 @@ export default function useSubagentActivityStream(
     };
     if ((readyReaders.get(readyKey) ?? 0) <= 1) setReady(false);
     const endpoint = `${apiBaseUrl()}/api/convos/${encodeURIComponent(selection.parentConversationId)}/subagents/${encodeURIComponent(threadId)}/tasks/${encodeURIComponent(taskId)}/activity`;
-    let stream: SSE | undefined;
+    let stream: AbortController | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryAttempt = 0;
     let disposed = false;
@@ -147,30 +152,29 @@ export default function useSubagentActivityStream(
     const closeCurrent = () => {
       const current = stream;
       stream = undefined;
-      current?.close();
+      current?.abort();
     };
     const connect = () => {
       retryTimer = undefined;
       if (disposed || terminal) return;
-      const next = new SSE(endpoint, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const next = new AbortController();
       stream = next;
 
-      next.addEventListener('message', (message: MessageEvent) => {
+      const onEvent = (event: ChatEvent) => {
         if (stream !== next || disposed) return;
-        let envelope: ActivityEnvelope;
-        try {
-          envelope = JSON.parse(message.data) as ActivityEnvelope;
-        } catch {
+        if (event.type === 'error') {
+          setReady(true);
+          refreshContent();
+          reconnect();
           return;
         }
-        if (envelope.ready === true) {
+        if (event.type === 'ready') {
           setReady(true);
           refreshContent();
           return;
         }
+        if (event.type !== 'step' && event.type !== 'final') return;
+        const envelope: ActivityEnvelope = event.data;
         if (envelope.event === 'subagent_content_available') {
           const watermark = envelope.data as
             | {
@@ -224,14 +228,14 @@ export default function useSubagentActivityStream(
           retryAttempt = 0;
           return;
         }
-        const event = envelope.data;
-        if (envelope.event !== StepEvents.ON_SUBAGENT_UPDATE || !isSubagentUpdate(event)) {
+        const update = envelope.data;
+        if (envelope.event !== StepEvents.ON_SUBAGENT_UPDATE || !isSubagentUpdate(update)) {
           return;
         }
         if (
           selection.event == null &&
-          event.parentToolCallId != null &&
-          event.parentToolCallId !== selection.toolCallId
+          update.parentToolCallId != null &&
+          update.parentToolCallId !== selection.toolCallId
         ) {
           return;
         }
@@ -242,7 +246,7 @@ export default function useSubagentActivityStream(
             previous,
             [
               {
-                ...event,
+                ...update,
                 activityDroppedCount:
                   Number.isSafeInteger(envelope.droppedCount) &&
                   (envelope.droppedCount as number) > 0
@@ -254,13 +258,8 @@ export default function useSubagentActivityStream(
             parentStreamOpenRef.current || previous?.activityReplayFrom != null,
           ),
         );
-      });
-      next.addEventListener('error', () => {
-        if (stream !== next) return;
-        setReady(true);
-        refreshContent();
-        reconnect();
-      });
+      };
+      transport.reconnectToStream({ url: endpoint }, { signal: next.signal, onEvent });
     };
 
     const reconnect = () => {
@@ -280,7 +279,6 @@ export default function useSubagentActivityStream(
     };
   }, [
     enabled,
-    isAuthenticated,
     key,
     queryClient,
     readyKey,
@@ -294,7 +292,7 @@ export default function useSubagentActivityStream(
     setReady,
     taskId,
     threadId,
-    token,
+    transport,
   ]);
   return { isReady };
 }

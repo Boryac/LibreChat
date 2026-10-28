@@ -21,5 +21,6 @@ module.exports = {
   },
   // The core runs without a DOM; a React spec opts into jsdom with a docblock.
   testEnvironment: 'node',
+  setupFiles: ['<rootDir>/jest.polyfills.js'],
   setupFilesAfterEnv: ['@testing-library/jest-dom/extend-expect'],
 };
