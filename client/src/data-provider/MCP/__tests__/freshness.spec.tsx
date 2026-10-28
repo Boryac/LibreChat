@@ -185,7 +185,10 @@ describe('MCP cache freshness', () => {
       jest.advanceTimersByTime(30_000);
     });
     expect(dataService.getMCPConnectionStatus).toHaveBeenCalledTimes(1);
-    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual(disconnected);
+    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual({
+      ...disconnected,
+      readStartedAt: Date.now(),
+    });
     expect(dataService.getMCPTools).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -225,7 +228,10 @@ describe('MCP cache freshness', () => {
     expect(dataService.getMCPTools).toHaveBeenCalledTimes(1);
     expect(dataService.getMCPConnectionStatus).toHaveBeenCalledTimes(1);
     expect(client.getQueryData([QueryKeys.mcpTools])).toEqual(changedCatalog);
-    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual(disconnected);
+    expect(client.getQueryData([QueryKeys.mcpConnectionStatus])).toEqual({
+      ...disconnected,
+      readStartedAt: Date.now(),
+    });
     unmount();
   });
 
