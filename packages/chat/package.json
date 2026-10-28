@@ -58,6 +58,7 @@
     "test:ci": "jest --ci"
   },
   "peerDependencies": {
+    "@ariakit/react": "^0.4.29",
     "@librechat/client": "*",
     "@tanstack/react-query": "^4.28.0",
     "jotai": "^2.12.5",
@@ -71,6 +72,7 @@
     "sse.js": "^2.8.0"
   },
   "devDependencies": {
+    "@ariakit/react": "^0.4.29",
     "@babel/preset-env": "^7.29.5",
     "@babel/preset-react": "^7.22.15",
     "@babel/preset-typescript": "^7.21.0",

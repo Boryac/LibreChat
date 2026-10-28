@@ -124,7 +124,12 @@ export {
   MessagesHostProvider,
   setDefaultMessagesHost,
 } from './react/messages/host';
-export type { MessagesHost } from './react/messages/host';
+export type {
+  ForkEvents,
+  MessagesHost,
+  ForkPreferences,
+  ForkConversation,
+} from './react/messages/host';
 export {
   SoleToolContext,
   LoneGroupContext,
