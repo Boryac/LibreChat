@@ -64,6 +64,8 @@ const {
 } = require('./MCP');
 
 jest.mock('./Config', () => ({
+  getMCPToolsCacheGeneration: jest.fn().mockResolvedValue('generation-current'),
+  getMCPConnectionState: jest.fn().mockResolvedValue(null),
   loadCustomConfig: jest.fn(),
   get getAppConfig() {
     return mockGetAppConfig;
@@ -318,6 +320,7 @@ describe('tests for the new helper functions used by the MCP connection status e
 
       expect(result).toEqual({
         mcpConfig: mockConfig,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         appConnections: new Map(),
         userConnections: new Map(),
         oauthServers: new Set(),
@@ -515,9 +518,14 @@ describe('tests for the new helper functions used by the MCP connection status e
   describe('getServerConnectionStatus', () => {
     const mockUserId = 'user-123';
     const mockServerName = 'test-server';
-    const mockConfig = { updatedAt: Date.now() };
+    const mockConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/',
+      updatedAt: Date.now(),
+    };
 
     beforeEach(() => {
+      mockGetMCPManager.mockReturnValue({ getToolPublicationGeneration: jest.fn() });
       require('~/models').findToken.mockReset();
     });
 
@@ -627,7 +635,7 @@ describe('tests for the new helper functions used by the MCP connection status e
         ...mockConfig,
         source: 'yaml',
         headers: { 'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
-        customUserVars: { API_KEY: { title: 'API key' } },
+        customUserVars: { API_KEY: { title: 'API key', description: 'Required API key' } },
       };
       const connectionArgs = [new Map(), new Map(), new Set()];
 
@@ -1227,7 +1235,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       const config = {
         ...mockConfig,
         url: 'https://mcp.example.com/',
-        customUserVars: { API_KEY: { title: 'API key' } },
+        customUserVars: { API_KEY: { title: 'API key', description: 'Required API key' } },
       };
       mockGetOAuthReconnectionManager.mockReturnValue({ isReconnecting: jest.fn(() => false) });
       mockGetFlowStateManager.mockReturnValue({ getFlowState: jest.fn(() => null) });

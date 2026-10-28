@@ -548,7 +548,6 @@ export function useMCPServerManager({
             queryClient.invalidateQueries([QueryKeys.mcpServers]),
             queryClient.invalidateQueries([QueryKeys.mcpTools]),
             queryClient.invalidateQueries([QueryKeys.mcpAuthValues]),
-            queryClient.invalidateQueries([QueryKeys.mcpConnectionStatus]),
           ]).catch((error) => {
             console.error(`[MCP Manager] Failed to refresh queries for ${serverName}:`, error);
           });
@@ -568,6 +567,10 @@ export function useMCPServerManager({
           status: 'error',
         });
         cleanupServerState(serverName);
+      } finally {
+        void queryClient.invalidateQueries([QueryKeys.mcpConnectionStatus]).catch((error) => {
+          console.error(`[MCP Manager] Failed to refresh status for ${serverName}:`, error);
+        });
       }
     },
     [

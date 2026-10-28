@@ -67,6 +67,7 @@ describe('useMCPServerManager initialization', () => {
         </Provider>
       );
       const { result, unmount } = renderHook(() => useMCPServerManager(), { wrapper });
+      const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
       const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
         if (failure === 'http') {
@@ -82,6 +83,7 @@ describe('useMCPServerManager initialization', () => {
         await act(async () => {
           await result.current.initializeServer('test-server');
         });
+        expect(invalidate).toHaveBeenCalledWith([QueryKeys.mcpConnectionStatus]);
         expect(result.current.isInitializing('test-server')).toBe(false);
         expect(result.current.isCancellable('test-server')).toBe(false);
         expect(mockOpenInNewTab).not.toHaveBeenCalled();

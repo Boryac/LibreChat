@@ -194,6 +194,10 @@ if (!externalCodeBaseUrl) {
 }
 
 const baseEnv = {
+  // Fault-injection runs exercise connection outcomes without unrelated circuit-breaker backoff.
+  ...(process.env.E2E_MCP_CONNECTION_STATUS === 'true'
+    ? { MCP_CB_MAX_FAILED_ROUNDS: '1000', MCP_CB_MAX_CYCLES: '1000' }
+    : {}),
   ...getLocalE2EEnv(),
   CONFIG_PATH: configPath,
   DEPLOYMENT_SKILLS_DIR: deploymentSkillsPath,
@@ -254,6 +258,33 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  if (process.env.E2E_MCP_CONNECTION_STATUS === 'true') {
+    config = config.replace(
+      'mcpSettings:\n',
+      'mcpSettings:\n  connectionStatus:\n    attemptTimeoutMs: 3000\n    leaseDurationMs: 3000\n    failureRetentionMs: 60000\n',
+    );
+    config = config.replace(
+      '  allowedDomains:\n',
+      '  allowedDomains:\n    - http://127.0.0.1:28769\n',
+    );
+    config = config.replace(
+      'mcpServers:\n',
+      `mcpServers:
+  e2e-status:
+    type: streamable-http
+    url: http://127.0.0.1:28769/mcp
+    requiresOAuth: false
+    startup: false
+    initTimeout: 1000
+    timeout: 1000
+    headers:
+      Authorization: 'Bearer e2e-status-token'
+      X-E2E-User: '{{LIBRECHAT_USER_ID}}'
+    title: E2E Connection State
+    description: Controlled MCP connection-attempt fixture.
+`,
+    );
+  }
   config = config.replace(
     '  agents:\n',
     `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,
@@ -548,6 +579,17 @@ export default defineConfig({
     },
   ],
   webServer: [
+    ...(process.env.E2E_MCP_CONNECTION_STATUS === 'true'
+      ? [
+          {
+            command: 'node e2e/setup/fake-mcp-status-server.js',
+            cwd: rootPath,
+            url: 'http://127.0.0.1:28769/',
+            timeout: 30_000,
+            reuseExistingServer: false,
+          },
+        ]
+      : []),
     {
       // URL-based MCP fixture for the allowlist-override spec (its health route is GET /).
       command: `node ${mcpHttpServerPath}`,

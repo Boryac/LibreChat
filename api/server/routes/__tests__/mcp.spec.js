@@ -57,6 +57,11 @@ jest.mock('@librechat/api', () => {
   const actual = jest.requireActual('@librechat/api');
   return {
     ...actual,
+    // These route-contract tests replace reinitMCPServer; the real lifecycle wrapper
+    // is exercised with actual SDK transports in the two-replica browser regression.
+    runMCPConnectionAttempt: jest.fn((params, deps) =>
+      deps.connect(() => {}, AbortSignal.timeout(60000), params.serverConfig),
+    ),
     MCPOAuthHandler: {
       initiateOAuthFlow: jest.fn(),
       getFlowState: jest.fn(),

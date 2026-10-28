@@ -2802,6 +2802,7 @@ export class MCPConnection extends EventEmitter {
   /** Permanently tears down a connection that will never be reused. */
   public async dispose(): Promise<void> {
     this.isDisposed = true;
+    this.emit('disposed');
     this.requestAuthorization.closed = true;
     // Failed-init teardown must cancel pre-dispatch waits before joining requests.
     // Network responses and durable rejection admission keep their own drain barrier.
@@ -3151,7 +3152,7 @@ export class MCPConnection extends EventEmitter {
    * a budget is not held for the probe's own SDK timeout. An aborted probe reports `false` for
    * this caller only; it never mutates connection state, so a shared connection stays usable.
    */
-  public async isConnected(signal?: AbortSignal): Promise<boolean> {
+  public async isConnected(signal?: AbortSignal, force = false): Promise<boolean> {
     // First check if we're in a connected state
     if (this.connectionState !== 'connected') {
       return false;
@@ -3159,7 +3160,7 @@ export class MCPConnection extends EventEmitter {
 
     // If we recently checked, skip expensive verification
     const now = Date.now();
-    if (now - this.lastConnectionCheckAt < mcpConfig.CONNECTION_CHECK_TTL) {
+    if (!force && now - this.lastConnectionCheckAt < mcpConfig.CONNECTION_CHECK_TTL) {
       return true;
     }
     let probeCredentialSetId = this.getOAuthCredentialSetId();

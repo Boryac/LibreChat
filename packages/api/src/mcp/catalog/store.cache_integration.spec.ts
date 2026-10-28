@@ -131,6 +131,48 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     return store;
   }
 
+  it('shares explicit attempt outcomes and rejects superseded or invalidated publications', async () => {
+    const owner = createStore(false);
+    const otherReplica = createStore(false);
+    const scope = {
+      userId,
+      serverName,
+      configGeneration: 'status-config',
+      publicationGeneration: (await owner.getMCPToolsCacheGeneration({ userId, serverName }))!,
+    };
+    const pending = {
+      attemptId: 'attempt-one',
+      state: 'connecting' as const,
+      deadline: Date.now() + 10000,
+    };
+    expect(await owner.setMCPConnectionState(scope, pending, 10000, true)).toBe(true);
+    expect(await otherReplica.getMCPConnectionState(scope)).toEqual(pending);
+    const connected = { ...pending, state: 'connected' as const, verifiedUntil: Date.now() + 5000 };
+    expect(await owner.setMCPConnectionState(scope, connected, 10000)).toBe(true);
+    expect(await otherReplica.getMCPConnectionState(scope)).toEqual(connected);
+    expect(
+      await otherReplica.setMCPConnectionState(
+        scope,
+        { ...pending, attemptId: 'attempt-two' },
+        10000,
+        true,
+      ),
+    ).toBe(true);
+    expect(await owner.setMCPConnectionState(scope, connected, 10000)).toBe(false);
+    await owner.invalidateCachedTools({ userId, serverName });
+    expect(
+      await otherReplica.setMCPConnectionState(
+        scope,
+        { ...pending, attemptId: 'attempt-two', state: 'error' },
+        10000,
+      ),
+    ).toBe(false);
+    expect(await otherReplica.getMCPConnectionState({ ...scope, userId: 'other-user' })).toBeNull();
+    expect(
+      await otherReplica.getMCPConnectionState({ ...scope, configGeneration: 'new-config' }),
+    ).toBeNull();
+  });
+
   it.each([false, true])(
     'keeps a surviving global fence when the lock is lost (old owner: %s)',
     async (oldOwner) => {

@@ -1,6 +1,7 @@
 const { logger } = require('@librechat/data-schemas');
 const {
   formatMCPServerTools,
+  captureMCPConnection,
   getUserMCPAuthMap,
   getMissingCustomUserVars,
   loadMCPServerCatalogs: loadCatalogs,
@@ -163,6 +164,7 @@ async function reinitMCPServer({
   mcpApps,
   streamId,
   jobCreatedAt,
+  connectionObserver,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** @type {MCPConnection | null} */
@@ -279,30 +281,34 @@ async function reinitMCPServer({
       });
 
     try {
-      connection = await mcpManager.getConnection({
-        user,
-        signal,
-        forceNew,
-        oauthStart,
-        serverName,
-        flowManager,
-        tokenMethods,
-        onOAuthCredentialsChanging,
-        returnOnOAuth,
-        oauthEnd,
-        customUserVars,
-        requestBody,
-        requestScopedConnections,
-        connectionTimeout,
-        serverConfig,
-        graphTokenResolver: getGraphApiToken,
-        oboTokenResolver: exchangeOboToken,
-        oboTrustChecker: createOboTrustChecker(),
-        upstreamTokenProvider,
-        upstreamTokenProviderResolver,
-        oboIdentityContext,
-        capabilityProfile,
-      });
+      connection = await captureMCPConnection(
+        () =>
+          mcpManager.getConnection({
+            user,
+            signal,
+            forceNew,
+            oauthStart,
+            serverName,
+            flowManager,
+            tokenMethods,
+            onOAuthCredentialsChanging,
+            returnOnOAuth,
+            oauthEnd,
+            customUserVars,
+            requestBody,
+            requestScopedConnections,
+            connectionTimeout,
+            serverConfig,
+            graphTokenResolver: getGraphApiToken,
+            oboTokenResolver: exchangeOboToken,
+            oboTrustChecker: createOboTrustChecker(),
+            upstreamTokenProvider,
+            upstreamTokenProviderResolver,
+            oboIdentityContext,
+            capabilityProfile,
+          }),
+        connectionObserver,
+      );
 
       logger.info('[MCP Reinitialize] Successfully established connection');
     } catch (err) {

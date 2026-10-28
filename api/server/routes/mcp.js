@@ -10,6 +10,9 @@ const {
 } = require('librechat-data-provider');
 const {
   getBasePath,
+  runMCPConnectionAttempt,
+  resolveMCPReinitializeConfig,
+  resolveMCPClientCapabilityProfile,
   getSafeErrorMetadata,
   createSafeUser,
   createAuthIdentityContext,
@@ -81,6 +84,8 @@ const {
   invalidateCachedTools,
   getAppConfig,
   getMCPToolsCacheGeneration,
+  getMCPConnectionState,
+  setMCPConnectionState,
 } = require('~/server/services/Config');
 const { updateMCPServerTools } = require('~/server/services/Config/mcp');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
@@ -882,7 +887,7 @@ router.post('/oauth/cancel/:serverName', requireJwtAuth, async (req, res) => {
   }
 });
 
-function createMCPStatusRuntimeContext(user, mcpConfig, serverNames) {
+function createMCPStatusRuntimeContext(user, mcpConfig, serverNames, capabilityProfile) {
   const customUserVarServers = serverNames.filter((serverName) => {
     const customUserVars = mcpConfig[serverName]?.customUserVars;
     return (
@@ -909,7 +914,7 @@ function createMCPStatusRuntimeContext(user, mcpConfig, serverNames) {
     });
     return mcpAllowlistsPromise;
   };
-  return { user: createSafeUser(user), loadUserMCPAuthMap, loadMCPAllowlists };
+  return { user: createSafeUser(user), loadUserMCPAuthMap, loadMCPAllowlists, capabilityProfile };
 }
 
 function getMCPReinitializeOAuthTimeout(oauthExpiresAt) {
@@ -978,32 +983,57 @@ router.post(
         tenantId: getTenantId(),
       });
 
-      const result = await reinitMCPServer({
-        user,
-        serverName,
-        serverConfig,
-        configServers,
-        userMCPAuthMap,
-        upstreamTokenProvider: createOpenIDSessionTokenProvider({
-          req,
-          res,
-          user: req.user,
-          identityContext: oboIdentityContext,
-          tokenPreference: 'access_token',
-        }),
-        oboIdentityContext,
-        recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
-        mcpApps: resolveMCPAppsPolicy(
-          req.config?.mcpSettings?.apps,
-          undefined,
-          req.config?.mcpAppSandbox?.maxPersistedAppBytes,
-          req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
-          req.config?.mcpAppSandbox?.url,
-          req.config?.mcpAppSandbox?.maxActiveViews,
-          req.config?.mcpAppSandbox?.maxActionPreviewChars,
-          req.config?.mcpAppSandbox?.operationLimits,
-        ),
-      });
+      const mcpApps = resolveMCPAppsPolicy(
+        req.config?.mcpSettings?.apps,
+        undefined,
+        req.config?.mcpAppSandbox?.maxPersistedAppBytes,
+        req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+        req.config?.mcpAppSandbox?.url,
+        req.config?.mcpAppSandbox?.maxActiveViews,
+        req.config?.mcpAppSandbox?.maxActionPreviewChars,
+        req.config?.mcpAppSandbox?.operationLimits,
+      );
+      const result = await runMCPConnectionAttempt(
+        {
+          userId: user.id,
+          serverName,
+          serverConfig,
+          capabilityProfile: resolveMCPClientCapabilityProfile(mcpApps),
+          policy: req.config?.mcpSettings?.connectionStatus,
+        },
+        {
+          getGeneration: () => getMCPToolsCacheGeneration({ userId: user.id, serverName }),
+          resolveConfig: () =>
+            resolveMCPReinitializeConfig(
+              getMCPServersRegistry(),
+              serverName,
+              serverConfig,
+              user.id,
+            ),
+          getMCPConnectionState,
+          setMCPConnectionState,
+          connect: (connectionObserver, signal, resolvedServerConfig) =>
+            reinitMCPServer({
+              connectionObserver,
+              signal,
+              user,
+              serverName,
+              serverConfig: resolvedServerConfig,
+              configServers,
+              userMCPAuthMap,
+              upstreamTokenProvider: createOpenIDSessionTokenProvider({
+                req,
+                res,
+                user: req.user,
+                identityContext: oboIdentityContext,
+                tokenPreference: 'access_token',
+              }),
+              oboIdentityContext,
+              recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
+              mcpApps,
+            }),
+        },
+      );
 
       if (!result) {
         return res.status(500).json({ error: 'Failed to reinitialize MCP server for user' });
@@ -1064,16 +1094,19 @@ router.get('/connection/status', requireJwtAuth, configMiddleware, async (req, r
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    const { mcpConfig, appConnections, userConnections, oauthServers } = await getMCPSetupData(
-      user.id,
-      {
+    const { mcpConfig, appConnections, userConnections, oauthServers, capabilityProfile } =
+      await getMCPSetupData(user.id, {
         role: user.role,
         idOnTheSource: user.idOnTheSource,
         tenantId: getTenantId(),
         appConfig: req.config,
-      },
+      });
+    const runtimeContext = createMCPStatusRuntimeContext(
+      user,
+      mcpConfig,
+      Object.keys(mcpConfig),
+      capabilityProfile,
     );
-    const runtimeContext = createMCPStatusRuntimeContext(user, mcpConfig, Object.keys(mcpConfig));
     const connectionStatus = Object.fromEntries(
       await Promise.all(
         Object.entries(mcpConfig).map(async ([serverName, config]) => {
@@ -1141,15 +1174,13 @@ router.get('/connection/status/:serverName', requireJwtAuth, configMiddleware, a
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    const { mcpConfig, appConnections, userConnections, oauthServers } = await getMCPSetupData(
-      user.id,
-      {
+    const { mcpConfig, appConnections, userConnections, oauthServers, capabilityProfile } =
+      await getMCPSetupData(user.id, {
         role: user.role,
         idOnTheSource: user.idOnTheSource,
         tenantId: getTenantId(),
         appConfig: req.config,
-      },
-    );
+      });
 
     if (!mcpConfig[serverName]) {
       return res
@@ -1157,7 +1188,12 @@ router.get('/connection/status/:serverName', requireJwtAuth, configMiddleware, a
         .json({ error: `MCP server '${serverName}' not found in configuration` });
     }
 
-    const runtimeContext = createMCPStatusRuntimeContext(user, mcpConfig, [serverName]);
+    const runtimeContext = createMCPStatusRuntimeContext(
+      user,
+      mcpConfig,
+      [serverName],
+      capabilityProfile,
+    );
 
     const { value: serverStatus, generation: authorizationGeneration } =
       await readMCPRecoveryGenerationAround(

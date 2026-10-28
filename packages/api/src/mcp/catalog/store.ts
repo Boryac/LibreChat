@@ -2,6 +2,11 @@ import { randomUUID } from 'crypto';
 import calculateSlot from 'cluster-key-slot';
 import { logger } from '@librechat/data-schemas';
 import { CacheKeys, Time } from 'librechat-data-provider';
+import type {
+  MCPConnectionStateScope,
+  MCPConnectionStateRecord,
+  MCPConnectionStateStore,
+} from '../status/types';
 import type { LCAvailableTools } from '../types';
 
 const GLOBAL_LOCK_TTL_MS = 30_000;
@@ -169,6 +174,23 @@ redis.call('PSETEX', KEYS[2], ARGV[4], cjson.encode({value=entry, expires=tonumb
 return 1
 `;
 
+const SET_CONNECTION_STATE_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
+local rawGeneration = redis.call('GET', KEYS[2])
+if not rawGeneration then return 0 end
+local valid, generation = pcall(cjson.decode, rawGeneration)
+if not valid or generation['value'] ~= ARGV[2] then return 0 end
+local raw = redis.call('GET', KEYS[3])
+if ARGV[3] ~= 'claim' then
+  if not raw then return 0 end
+  local ok, record = pcall(cjson.decode, raw)
+  if not ok or record['value']['attemptId'] ~= ARGV[4] then return 0 end
+end
+${legacyOwnershipCheck(4, 0)}
+redis.call('PSETEX', KEYS[3], ARGV[7], ARGV[5])
+return 1
+`;
+
 const DELETE_GLOBAL_IF_OWNER_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 ${legacyOwnershipCheck(3, 0)}
@@ -266,7 +288,7 @@ function ownershipKeys(fence: OwnershipFence, ...keys: string[]): string[] {
   return result;
 }
 
-export interface MCPCatalogStore {
+export interface MCPCatalogStore extends MCPConnectionStateStore {
   getCachedTools: (options?: CachedToolsOptions) => Promise<LCAvailableTools | null>;
   updateCachedGlobalTools: (update: (tools: LCAvailableTools) => LCAvailableTools) => Promise<void>;
   setCachedTools: (tools: LCAvailableTools, options?: CachedToolsOptions) => Promise<boolean>;
@@ -651,6 +673,88 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     return result;
   }
 
+  function connectionStateKey(scope: MCPConnectionStateScope): string {
+    return `status:mcp:{${encodeURIComponent(scope.userId)}:${encodeURIComponent(scope.serverName)}}:${encodeURIComponent(scope.configGeneration)}:${encodeURIComponent(scope.publicationGeneration)}`;
+  }
+
+  async function getMCPConnectionState(
+    scope: MCPConnectionStateScope,
+  ): Promise<MCPConnectionStateRecord | null> {
+    const cache = await getReadyCache();
+    const value = await cache.get(connectionStateKey(scope));
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      !('attemptId' in value) ||
+      !('state' in value) ||
+      !('deadline' in value)
+    )
+      return null;
+    const { attemptId, state, deadline } = value;
+    const verifiedUntil = 'verifiedUntil' in value ? value.verifiedUntil : undefined;
+    if (
+      typeof attemptId !== 'string' ||
+      !attemptId ||
+      typeof deadline !== 'number' ||
+      !Number.isFinite(deadline) ||
+      (state !== 'connecting' &&
+        state !== 'connected' &&
+        state !== 'disconnected' &&
+        state !== 'error') ||
+      (verifiedUntil !== undefined &&
+        (typeof verifiedUntil !== 'number' || !Number.isFinite(verifiedUntil)))
+    )
+      return null;
+    return {
+      attemptId,
+      state,
+      deadline,
+      ...(typeof verifiedUntil === 'number' && { verifiedUntil }),
+    };
+  }
+
+  async function setMCPConnectionState(
+    scope: MCPConnectionStateScope,
+    record: MCPConnectionStateRecord,
+    ttl: number,
+    claim = false,
+  ): Promise<boolean> {
+    const cache = await getReadyCache();
+    return withUserQueue(
+      scope.userId,
+      scope.serverName,
+      async (fence) => {
+        const generationKey = ToolCacheKeys.MCP_SERVER_GENERATION(scope.userId, scope.serverName);
+        const stateKey = connectionStateKey(scope);
+        if (!sharedRedis()) {
+          if ((await cache.get(generationKey)) !== scope.publicationGeneration) return false;
+          const current = await getMCPConnectionState(scope);
+          if (!claim && current?.attemptId !== record.attemptId) return false;
+          if ((await cache.set(stateKey, record, ttl)) === false)
+            throw new Error('MCP connection state write rejected');
+          return true;
+        }
+        if (!fence) throw new Error('MCP connection state write requires lock ownership');
+        const expires = Date.now() + ttl;
+        const result = await deps.keyvRedisClient!.eval(SET_CONNECTION_STATE_SCRIPT, {
+          keys: ownershipKeys(fence, rawKey(generationKey), rawKey(stateKey)),
+          arguments: [
+            fence.token,
+            scope.publicationGeneration,
+            claim ? 'claim' : 'update',
+            record.attemptId,
+            JSON.stringify({ value: record, expires }),
+            String(expires),
+            String(ttl),
+          ],
+        });
+        if (Number(result) < 0) throw new Error('MCP connection state write lost lock ownership');
+        return Number(result) === 1;
+      },
+      true,
+    );
+  }
+
   async function getCachedTools(
     options: CachedToolsOptions = {},
   ): Promise<LCAvailableTools | null> {
@@ -1020,6 +1124,8 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
   }
 
   return {
+    getMCPConnectionState,
+    setMCPConnectionState,
     getCachedTools,
     updateCachedGlobalTools,
     setCachedTools,
