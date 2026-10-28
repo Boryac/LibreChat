@@ -22,6 +22,10 @@ test('Connect reports verified success or failure consistently across replicas',
   };
   await page.goto('/c/new');
   const token = await getAccessToken(page);
+  await expect(page.locator('.split-parent [aria-hidden="true"] > span').last()).toHaveCSS(
+    'opacity',
+    '1',
+  );
   const user = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).id;
   expect(typeof user).toBe('string');
   const control = `http://127.0.0.1:28769/control?user=${encodeURIComponent(user)}`;
