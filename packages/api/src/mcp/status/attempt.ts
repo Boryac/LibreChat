@@ -95,6 +95,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
   const record: MCPConnectionStateRecord = {
     attemptId: randomUUID(),
     state: 'connecting',
+    explicitAttempt: true,
     deadline: Date.now() + policy.attemptTimeoutMs,
   };
   const signal = AbortSignal.timeout(Math.max(1, record.deadline - Date.now()));
@@ -199,11 +200,13 @@ export function observeMCPConnection(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let epoch = 0;
   let stopped = false;
+  let activeProbe: AbortController | undefined;
   let publication: Promise<boolean> = Promise.resolve(true);
   const interval = Math.floor(policy.leaseDurationMs / 3);
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    activeProbe?.abort();
     clearTimeout(timer);
     connection.removeListener('connectionChange', change);
     connection.removeListener('disposed', disposed);
@@ -211,19 +214,24 @@ export function observeMCPConnection(
   };
   const publish = (state: MCPConnectionStateRecord['state'], disposed = false) => {
     const observedEpoch = ++epoch;
+    activeProbe?.abort();
     clearTimeout(timer);
     publication = publication
       .then(async () => {
         if (observedEpoch !== epoch || (stopped && !disposed)) return false;
         let verified = state;
         if (state === 'connected') {
-          const signal = AbortSignal.timeout(interval);
+          const controller = new AbortController();
+          activeProbe = controller;
+          const signal = AbortSignal.any([AbortSignal.timeout(interval), controller.signal]);
           try {
             if (!(await withDeadline(connection.isConnected(signal, true), signal))) {
               verified = 'error';
             }
           } catch {
             verified = 'error';
+          } finally {
+            if (activeProbe === controller) activeProbe = undefined;
           }
           if (observedEpoch !== epoch || stopped) return false;
         }
@@ -232,6 +240,7 @@ export function observeMCPConnection(
           {
             ...initial,
             state: verified,
+            explicitAttempt: false,
             deadline:
               state === 'connecting' ? Date.now() + policy.attemptTimeoutMs : initial.deadline,
             ...(verified === 'connected' && { verifiedUntil: Date.now() + policy.leaseDurationMs }),

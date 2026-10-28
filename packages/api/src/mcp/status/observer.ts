@@ -29,7 +29,12 @@ export function createMCPConnectionStatusObserver(
     params.signal?.throwIfAborted();
     // An explicit caller owns its pending result. A fresh checkout may recover an
     // abandoned attempt, but cannot race an active Connect into a false success.
-    if (current?.state === 'connecting' && current.deadline > Date.now()) return;
+    if (
+      current?.state === 'connecting' &&
+      current.explicitAttempt !== false &&
+      current.deadline > Date.now()
+    )
+      return;
     const ownerKey = JSON.stringify(scope);
     const existing = observers.get(params.connection)?.get(ownerKey);
     if (
@@ -41,6 +46,7 @@ export function createMCPConnectionStatusObserver(
     const record = {
       attemptId: randomUUID(),
       state: 'connecting' as const,
+      explicitAttempt: false,
       deadline: Date.now() + policy.attemptTimeoutMs,
       requiresOAuth: params.connection.usesOAuth?.() === true,
     };
@@ -62,6 +68,6 @@ export function createMCPConnectionStatusObserver(
       owners.delete(ownerKey),
     );
     owners.set(ownerKey, observer);
-    if (!(await observer.ready)) observer.stop();
+    await observer.ready;
   };
 }

@@ -16,6 +16,7 @@ export interface MCPConnectionStateRecord {
   deadline: number;
   verifiedUntil?: number;
   requiresOAuth?: boolean;
+  explicitAttempt?: boolean;
 }
 
 export interface MCPConnectionStateStore {

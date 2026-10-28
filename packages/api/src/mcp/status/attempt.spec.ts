@@ -179,6 +179,39 @@ describe('verified MCP connection attempts', () => {
     expect(f.connection.listenerCount('connectionChange')).toBe(0);
     expect(f.connection.listenerCount('disposed')).toBe(0);
   });
+  it('publishes a transport error promptly while an older health probe is stalled', async () => {
+    const f = fixture();
+    let complete!: (value: boolean) => void;
+    let published!: (value: string) => void;
+    const outcome = new Promise<string>((resolve) => {
+      published = resolve;
+    });
+    await runMCPConnectionAttempt(f.params, f.deps);
+    const previous = f.deps.setMCPConnectionState;
+    f.deps.setMCPConnectionState = async (...args) => {
+      const accepted = await previous(...args);
+      if (accepted && args[1].state === 'error') published('error');
+      return accepted;
+    };
+    f.connection.isConnected.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    f.connection.emit('connectionChange', 'connected');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    f.connection.emit('connectionChange', 'error');
+    const cutoff = setTimeout(() => published('late'), 50);
+    try {
+      expect(await outcome).toBe('error');
+    } finally {
+      clearTimeout(cutoff);
+      complete(true);
+      f.connection.emit('disposed');
+    }
+  });
+
   it('bounds verification even when the transport ignores its abort signal', async () => {
     const f = fixture();
     f.connection.isConnected.mockImplementation(() => new Promise(() => {}));

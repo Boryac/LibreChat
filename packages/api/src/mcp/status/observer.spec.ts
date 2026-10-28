@@ -39,39 +39,58 @@ async function fixture() {
 }
 
 describe('managed connection observation', () => {
-  it('lets a verified replacement win over a racing disposal from the old connection', async () => {
-    const f = await fixture();
-    const old = f.connection();
-    const next = f.connection();
-    await runMCPConnectionAttempt(f.params, {
-      ...f.store,
-      getGeneration: async () => f.scope.publicationGeneration,
-      connect: async (capture) => {
-        capture(old);
-        return { success: true };
-      },
-    });
-    const oldAttempt = (await f.read())!.attemptId;
-    old.emit('disposed');
-    await f.notify({ ...f.ready, connection: next });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(await f.read()).toMatchObject({ state: 'connected' });
-    expect((await f.read())!.attemptId).not.toBe(oldAttempt);
-    expect(
-      await f.store.setMCPConnectionState(
-        f.scope,
-        { attemptId: oldAttempt, state: 'disconnected', deadline: Date.now() },
-        10000,
-      ),
-    ).toBe(false);
-    next.emit('disposed');
-  });
+  it.each(['connected', 'connecting'] as const)(
+    'lets a verified replacement win over old %s state and disposal',
+    async (state) => {
+      const f = await fixture();
+      const old = f.connection();
+      const next = f.connection();
+      let releaseDisposal!: () => void;
+      const disposal = new Promise<void>((resolve) => {
+        releaseDisposal = resolve;
+      });
+      const original = f.store.setMCPConnectionState;
+      f.store.setMCPConnectionState = async (...args) => {
+        if (args[1].state === 'disconnected' && args[1].attemptId === oldAttempt) await disposal;
+        return original(...args);
+      };
+      await runMCPConnectionAttempt(f.params, {
+        ...f.store,
+        getGeneration: async () => f.scope.publicationGeneration,
+        connect: async (capture) => {
+          capture(old);
+          return { success: true };
+        },
+      });
+      const oldAttempt = (await f.read())!.attemptId;
+      if (state === 'connecting') {
+        old.emit('connectionChange', 'connecting');
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(await f.read()).toMatchObject({ state: 'connecting', explicitAttempt: false });
+      }
+      old.emit('disposed');
+      await f.notify({ ...f.ready, connection: next });
+      releaseDisposal();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(await f.read()).toMatchObject({ state: 'connected' });
+      expect((await f.read())!.attemptId).not.toBe(oldAttempt);
+      expect(
+        await f.store.setMCPConnectionState(
+          f.scope,
+          { attemptId: oldAttempt, state: 'disconnected', deadline: Date.now() },
+          10000,
+        ),
+      ).toBe(false);
+      next.emit('disposed');
+    },
+  );
   it('leaves an active explicit Connect attempt in charge', async () => {
     const f = await fixture();
     const connection = f.connection();
     const pending = {
       attemptId: 'explicit',
       state: 'connecting' as const,
+      explicitAttempt: true,
       deadline: Date.now() + 10000,
     };
     await f.store.setMCPConnectionState(f.scope, pending, 20000, true);

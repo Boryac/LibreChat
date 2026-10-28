@@ -699,6 +699,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     const { attemptId, state, deadline } = value;
     const verifiedUntil = 'verifiedUntil' in value ? value.verifiedUntil : undefined;
     const requiresOAuth = 'requiresOAuth' in value ? value.requiresOAuth : undefined;
+    const explicitAttempt = 'explicitAttempt' in value ? value.explicitAttempt : undefined;
     if (
       typeof attemptId !== 'string' ||
       !attemptId ||
@@ -709,6 +710,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
         state !== 'disconnected' &&
         state !== 'error') ||
       (requiresOAuth !== undefined && typeof requiresOAuth !== 'boolean') ||
+      (explicitAttempt !== undefined && typeof explicitAttempt !== 'boolean') ||
       (verifiedUntil !== undefined &&
         (typeof verifiedUntil !== 'number' || !Number.isFinite(verifiedUntil)))
     )
@@ -719,6 +721,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       deadline,
       ...(typeof verifiedUntil === 'number' && { verifiedUntil }),
       ...(typeof requiresOAuth === 'boolean' && { requiresOAuth }),
+      ...(typeof explicitAttempt === 'boolean' && { explicitAttempt }),
     };
   }
 
