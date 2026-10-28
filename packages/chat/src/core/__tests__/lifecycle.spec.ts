@@ -2090,25 +2090,28 @@ describe('Chat answers, successors and pause order', () => {
     },
   );
 
-  it('(2) an answer that fails on the network reattaches to the paused generation', async () => {
-    const h = createHarness();
-    await states.restored(h);
-    h.transport.resume.mockRejectedValueOnce(networkError());
-    const continued = createStream({ streamId: 'convo-1', generationCreatedAt: 500 });
-    h.transport.reconnectToStream.mockResolvedValueOnce(continued);
+  it.each(['ERR_NETWORK', 'ERR_INTERNET_DISCONNECTED'])(
+    '(2) an answer that fails on the network (%s) reattaches to the paused generation',
+    async (code) => {
+      const h = createHarness();
+      await states.restored(h);
+      h.transport.resume.mockRejectedValueOnce(Object.assign(new Error('Network Error'), { code }));
+      const continued = createStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+      h.transport.reconnectToStream.mockResolvedValueOnce(continued);
 
-    await expect(h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' })).rejects.toThrow();
-    await flush();
-    expect(h.transport.reconnectToStream).toHaveBeenCalledWith(
-      expect.objectContaining({ generationCreatedAt: 500 }),
-    );
-    continued.push(stepEvent);
-    await flush();
-    expect(h.chat.status).toBe('streaming');
-    h.transport.abort.mockResolvedValueOnce({ success: true });
-    continued.push(finalEvent({ terminalStatus: 'aborted' }));
-    await flush();
-  });
+      await expect(h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' })).rejects.toThrow();
+      await flush();
+      expect(h.transport.reconnectToStream).toHaveBeenCalledWith(
+        expect.objectContaining({ generationCreatedAt: 500 }),
+      );
+      continued.push(stepEvent);
+      await flush();
+      expect(h.chat.status).toBe('streaming');
+      h.transport.abort.mockResolvedValueOnce({ success: true });
+      continued.push(finalEvent({ terminalStatus: 'aborted' }));
+      await flush();
+    },
+  );
 
   it.each([
     ['refuses the caller', 403, {}],

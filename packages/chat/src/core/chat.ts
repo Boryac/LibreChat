@@ -2561,7 +2561,7 @@ export class Chat {
         }
         throw error;
       }
-      const ambiguous = failure.code === 'ERR_NETWORK';
+      const ambiguous = isRetryableNetworkError(failure);
       if (
         ambiguous &&
         !this.active &&
