@@ -785,7 +785,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       local clock = redis.call('TIME')
       return tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
     `,
-            { keys: [], arguments: [] },
+            { keys: [rawKey(connectionStateKey(scope))], arguments: [] },
           ),
         )
       : scheduledAt;

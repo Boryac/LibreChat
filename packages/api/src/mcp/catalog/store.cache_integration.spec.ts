@@ -73,6 +73,7 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     get?: CatalogCache['get'],
     deployment = prefix,
     beforeStateWrite?: () => Promise<void>,
+    unroutedClockSkewMs = 0,
   ) {
     const cache: CatalogCache = {
       get:
@@ -90,6 +91,12 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     };
     const client: NonNullable<CatalogStoreDeps['keyvRedisClient']> = {
       eval: async (script, options) => {
+        if (
+          unroutedClockSkewMs &&
+          options.keys.length === 0 &&
+          script.includes("local clock = redis.call('TIME')")
+        )
+          return Date.now() + unroutedClockSkewMs;
         if (script.includes('local incoming = cjson.decode(ARGV[5])')) await beforeStateWrite?.();
         options.keys.forEach((key) => keys.add(key));
         const scriptKeys = [
@@ -280,6 +287,27 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
       ),
     ).toBe(false);
     expect((await store.getMCPConnectionState(scope))?.attemptId).toBe('verified');
+  });
+
+  it('uses the status slot clock instead of a skewed unrouted cluster node', async () => {
+    const store = createStore(false, undefined, prefix, undefined, 60_000);
+    const scope = {
+      userId,
+      serverName,
+      configGeneration: 'clock-route',
+      publicationGeneration: (await store.getMCPToolsCacheGeneration({ userId, serverName }))!,
+    };
+    expect(
+      await store.setMCPConnectionState(
+        scope,
+        { attemptId: 'routed-clock', state: 'connecting', deadline: Date.now() + 1000 },
+        10000,
+        true,
+      ),
+    ).toBe(true);
+    const record = await store.getMCPConnectionState(scope);
+    expect(record!.deadline - record!.serverNow!).toBeLessThanOrEqual(1000);
+    expect(record!.deadline - record!.serverNow!).toBeGreaterThan(0);
   });
 
   it.each([false, true])(
