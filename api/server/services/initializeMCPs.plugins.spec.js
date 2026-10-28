@@ -26,6 +26,7 @@ const mockSetHandler = jest.fn();
 jest.mock('~/models', () => ({ listConfigTombstones: jest.fn() }));
 
 jest.mock('@librechat/api', () => ({
+  createMCPConnectionStatusObserver: jest.fn(() => jest.fn()),
   createMCPAppBindingCodec: jest.fn(() => ({ create: jest.fn(), verify: jest.fn() })),
   createMCPPolicyResolver: jest.fn(() => jest.fn()),
   reportStoredMCPTombstones: jest.fn().mockResolvedValue(undefined),

@@ -165,6 +165,7 @@ async function reinitMCPServer({
   streamId,
   jobCreatedAt,
   connectionObserver,
+  connectionStatusManagedExternally,
 }) {
   const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
   /** @type {MCPConnection | null} */
@@ -286,6 +287,7 @@ async function reinitMCPServer({
           mcpManager.getConnection({
             user,
             signal,
+            connectionStatusManagedExternally,
             forceNew,
             oauthStart,
             serverName,

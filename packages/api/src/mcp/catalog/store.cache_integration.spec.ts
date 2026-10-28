@@ -172,6 +172,24 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
       ),
     ).toBe(true);
     expect(await owner.setMCPConnectionState(scope, connected, 10000)).toBe(false);
+    expect(
+      await owner.setMCPConnectionState(
+        scope,
+        { ...connected, attemptId: 'replacement' },
+        10000,
+        true,
+        'attempt-one',
+      ),
+    ).toBe(false);
+    expect(
+      await owner.setMCPConnectionState(
+        scope,
+        { ...connected, attemptId: 'replacement' },
+        10000,
+        true,
+        'attempt-two',
+      ),
+    ).toBe(true);
     // Simulate the authorization generation committed by another replica.
     await redis.set(
       generationKey,
@@ -182,7 +200,7 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     expect(
       await otherReplica.setMCPConnectionState(
         scope,
-        { ...pending, attemptId: 'attempt-two', state: 'error' },
+        { ...pending, attemptId: 'replacement', state: 'error' },
         10000,
       ),
     ).toBe(false);

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { MCPConnectionStateRecord, MCPConnectionStateScope } from './types';
-import type { ObservedMCPConnection } from './attempt';
+import type { ObservedMCPConnection } from './types';
 import { STANDARD_MCP_CAPABILITY_PROFILE } from '../capabilities';
 import { createMCPCatalogStore } from '../catalog/store';
 import { runMCPConnectionAttempt } from './attempt';
@@ -39,9 +39,16 @@ function fixture() {
       value: MCPConnectionStateRecord,
       ttl: number,
       claim?: boolean | 'ifAbsent',
+      expectedAttemptId?: string,
     ) => {
       observedScope = scope;
-      const accepted = await store.setMCPConnectionState(scope, value, ttl, claim);
+      const accepted = await store.setMCPConnectionState(
+        scope,
+        value,
+        ttl,
+        claim,
+        expectedAttemptId,
+      );
       if (accepted) observations.push(value);
       return accepted;
     },
@@ -90,6 +97,29 @@ describe('verified MCP connection attempts', () => {
     expect(result).toMatchObject({ success: false, message: expect.stringContaining('timed out') });
     expect(f.observations[f.observations.length - 1]?.state).toBe('error');
   });
+  it('counts a delayed shared claim against the same attempt deadline', async () => {
+    const f = fixture();
+    const original = f.deps.setMCPConnectionState;
+    const connect = jest.fn(f.deps.connect);
+    try {
+      const result = await runMCPConnectionAttempt(
+        { ...f.params, policy: { ...f.params.policy, attemptTimeoutMs: 10 } },
+        {
+          ...f.deps,
+          connect,
+          setMCPConnectionState: async (...args) => {
+            if (args[3]) await new Promise((resolve) => setTimeout(resolve, 25));
+            return original(...args);
+          },
+        },
+      );
+      expect(result).toMatchObject({ success: false });
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      f.connection.emit('disposed');
+    }
+  });
+
   it('prevents an older connection from resurrecting success after authorization invalidation', async () => {
     const f = fixture();
     await runMCPConnectionAttempt(f.params, f.deps);
@@ -202,6 +232,23 @@ describe('verified MCP connection attempts', () => {
     ).rejects.toThrow('superseded');
     expect((await f.store.getMCPConnectionState(f.scope()))?.attemptId).toBe('peer');
     f.connection.emit('disposed');
+  });
+
+  it('gives an automatic reconnect a new pending deadline after the original attempt ended', async () => {
+    const f = fixture();
+    await runMCPConnectionAttempt(f.params, f.deps);
+    const now = Date.now() + f.params.policy.attemptTimeoutMs + 1;
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      f.connection.emit('connectionChange', 'connecting');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const current = await f.store.getMCPConnectionState(f.scope());
+      expect(current?.state).toBe('connecting');
+      expect(current?.deadline).toBeGreaterThan(now);
+    } finally {
+      clock.mockRestore();
+      f.connection.emit('disposed');
+    }
   });
 
   it('keeps user and config scopes isolated', async () => {

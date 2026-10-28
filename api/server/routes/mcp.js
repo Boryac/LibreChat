@@ -1017,6 +1017,7 @@ router.post(
           connect: (connectionObserver, signal, resolvedServerConfig) =>
             reinitMCPServer({
               connectionObserver,
+              connectionStatusManagedExternally: true,
               signal,
               user,
               serverName,

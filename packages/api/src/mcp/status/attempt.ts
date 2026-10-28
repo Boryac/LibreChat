@@ -4,6 +4,7 @@ import type {
   MCPConnectionStateScope,
   MCPConnectionStateRecord,
   MCPConnectionStateStore,
+  ObservedMCPConnection,
 } from './types';
 import type { MCPReinitializeConfigResolution, MCPReinitializeStopResult } from '../reinitialize';
 import type { MCPClientCapabilityProfile } from '../capabilities';
@@ -23,21 +24,6 @@ export const DEFAULT_MCP_CONNECTION_STATUS_POLICY: MCPConnectionStatusPolicy = {
   leaseDurationMs: 90_000,
   failureRetentionMs: 600_000,
 };
-
-export interface ObservedMCPConnection {
-  isConnected: (signal?: AbortSignal, force?: boolean) => Promise<boolean>;
-  usesOAuth?: () => boolean;
-  on: (
-    event: 'connectionChange',
-    listener: (state: MCPConnectionStateRecord['state']) => void,
-  ) => unknown;
-  once: (event: 'disposed', listener: () => void) => unknown;
-  removeListener(
-    event: 'connectionChange',
-    listener: (state: MCPConnectionStateRecord['state']) => void,
-  ): unknown;
-  removeListener(event: 'disposed', listener: () => void): unknown;
-}
 
 interface AttemptResult {
   success: boolean;
@@ -63,7 +49,7 @@ async function withDeadline<T>(operation: Promise<T>, signal: AbortSignal): Prom
     else signal.addEventListener('abort', abort, { once: true });
   });
   try {
-    return await Promise.race([operation, cancelled]);
+    return await Promise.race([cancelled, operation]);
   } finally {
     signal.removeEventListener('abort', abort);
   }
@@ -111,14 +97,15 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
     state: 'connecting',
     deadline: Date.now() + policy.attemptTimeoutMs,
   };
+  const signal = AbortSignal.timeout(Math.max(1, record.deadline - Date.now()));
   const retainedTtl = policy.attemptTimeoutMs + policy.failureRetentionMs;
   if (!(await deps.setMCPConnectionState(scope, record, retainedTtl, true))) {
     throw new Error('MCP connection attempt was superseded');
   }
-  const signal = AbortSignal.timeout(policy.attemptTimeoutMs);
   let connection: ObservedMCPConnection | undefined;
   try {
-    const resolution = await withDeadline(
+    signal.throwIfAborted();
+    const resolution = await withDeadline<MCPReinitializeConfigResolution>(
       deps.resolveConfig?.() ?? Promise.resolve({ serverConfig: params.serverConfig }),
       signal,
     );
@@ -165,7 +152,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
         throw new Error('MCP connection attempt was superseded');
       }
     }
-    const observer = observeConnection(connection, scope, record, policy, deps);
+    const observer = observeMCPConnection(connection, scope, record, policy, deps);
     if (
       !(await withDeadline(observer.ready, signal).catch((error) => {
         observer.stop();
@@ -201,12 +188,13 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
   }
 }
 
-function observeConnection(
+export function observeMCPConnection(
   connection: ObservedMCPConnection,
   scope: MCPConnectionStateScope,
   initial: MCPConnectionStateRecord,
   policy: MCPConnectionStatusPolicy,
   store: MCPConnectionStateStore,
+  onStop?: () => void,
 ): { ready: Promise<boolean>; stop: () => void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let epoch = 0;
@@ -214,10 +202,12 @@ function observeConnection(
   let publication: Promise<boolean> = Promise.resolve(true);
   const interval = Math.floor(policy.leaseDurationMs / 3);
   const stop = () => {
+    if (stopped) return;
     stopped = true;
     clearTimeout(timer);
     connection.removeListener('connectionChange', change);
     connection.removeListener('disposed', disposed);
+    onStop?.();
   };
   const publish = (state: MCPConnectionStateRecord['state'], disposed = false) => {
     const observedEpoch = ++epoch;
@@ -242,9 +232,12 @@ function observeConnection(
           {
             ...initial,
             state: verified,
+            deadline:
+              state === 'connecting' ? Date.now() + policy.attemptTimeoutMs : initial.deadline,
             ...(verified === 'connected' && { verifiedUntil: Date.now() + policy.leaseDurationMs }),
           },
-          policy.leaseDurationMs + policy.failureRetentionMs,
+          (state === 'connecting' ? policy.attemptTimeoutMs : policy.leaseDurationMs) +
+            policy.failureRetentionMs,
         );
         if (!current) stop();
         return current && observedEpoch === epoch && (disposed || !stopped) && verified === state;

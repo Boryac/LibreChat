@@ -267,6 +267,8 @@ export interface BasicConnectionOptions {
 
 /** User context for placeholder resolution in MCP connections (non-OAuth and OAuth alike) */
 export interface UserConnectionContext {
+  /** The explicit Connect caller owns observation until its attempt has settled. */
+  connectionStatusManagedExternally?: boolean;
   user?: IUser;
   customUserVars?: Record<string, string>;
   requestBody?: RequestBody;

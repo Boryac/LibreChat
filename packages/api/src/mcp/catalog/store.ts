@@ -182,6 +182,11 @@ local valid, generation = pcall(cjson.decode, rawGeneration)
 if not valid or generation['value'] ~= ARGV[2] then return 0 end
 local raw = redis.call('GET', KEYS[3])
 if ARGV[3] == 'ifAbsent' and raw then return 0 end
+if ARGV[8] ~= '' then
+  if not raw then return 0 end
+  local ok, current = pcall(cjson.decode, raw)
+  if not ok or current['value']['attemptId'] ~= ARGV[8] then return 0 end
+end
 if ARGV[3] == 'update' then
   if not raw then return 0 end
   local ok, record = pcall(cjson.decode, raw)
@@ -722,6 +727,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     record: MCPConnectionStateRecord,
     ttl: number,
     claim: boolean | 'ifAbsent' = false,
+    expectedAttemptId?: string,
   ): Promise<boolean> {
     const cache = await getReadyCache();
     return withUserQueue(
@@ -734,6 +740,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
           if ((await cache.get(generationKey)) !== scope.publicationGeneration) return false;
           const current = await getMCPConnectionState(scope);
           if (claim === 'ifAbsent' && current) return false;
+          if (expectedAttemptId && current?.attemptId !== expectedAttemptId) return false;
           if (!claim && current?.attemptId !== record.attemptId) return false;
           if ((await cache.set(stateKey, record, ttl)) === false)
             throw new Error('MCP connection state write rejected');
@@ -753,6 +760,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
             JSON.stringify({ value: record, expires }),
             String(expires),
             String(ttl),
+            expectedAttemptId ?? '',
           ],
         });
         if (Number(result) < 0) throw new Error('MCP connection state write lost lock ownership');
