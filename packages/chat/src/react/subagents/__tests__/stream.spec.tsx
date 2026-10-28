@@ -748,6 +748,89 @@ describe('useSubagentActivityStream', () => {
     jest.useRealTimers();
   });
 
+  it('keeps replayed history, the ready boundary and a live steer in wire order across a reconnect', () => {
+    jest.useFakeTimers();
+    const { result, unmount } = renderHook(
+      () => {
+        useSubagentActivityStream(selection);
+        return useAtomValue(
+          subagentProgressByToolCallId(
+            subagentProgressKey(
+              selection.parentMessageId,
+              selection.toolCallId,
+              selection.partIndex,
+            ),
+          ),
+        );
+      },
+      { wrapper },
+    );
+    const update = (sequence: number, phase: string, data: unknown) => ({
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: selection.toolCallId,
+        activityEventId: `task:${sequence}`,
+        activitySequence: sequence,
+        phase,
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data,
+      },
+    });
+    const text = (sequence: number) =>
+      update(sequence, 'message_delta', {
+        delta: { content: [{ type: ContentTypes.TEXT, text: `text-${sequence}` }] },
+      });
+    const steer = update(3, 'steer_applied', {
+      index: 1,
+      part: { type: ContentTypes.STEER, steer: 'parent guidance', steerId: 'steer-1' },
+    });
+    const summary = () =>
+      result.current?.contentParts.map((part) =>
+        part?.type === ContentTypes.STEER ? 'steer' : (part as { text?: string })?.text,
+      );
+
+    act(() => {
+      streams[0].emit('message', {
+        event: 'subagent_activity_replay',
+        data: [text(0), text(1)],
+      });
+      streams[0].emit('message', { ready: true, contentRecovery: true });
+      streams[0].emit('message', text(2));
+      streams[0].emit('message', steer);
+      streams[0].emit('message', text(4));
+    });
+    expect(result.current?.contentParts.map((part) => part?.type)).toEqual([
+      ContentTypes.TEXT,
+      ContentTypes.STEER,
+      ContentTypes.TEXT,
+    ]);
+    const live = summary();
+    expect(live).toEqual(['text-0text-1text-2', 'steer', 'text-4']);
+
+    act(() => {
+      streams[0].emit('error', {});
+    });
+    act(() => jest.advanceTimersByTime(500));
+    expect(streams).toHaveLength(2);
+    act(() => {
+      streams[1].emit('message', {
+        event: 'subagent_activity_replay',
+        data: [text(0), text(1), text(2), steer, text(4)],
+      });
+      streams[1].emit('message', { ready: true, contentRecovery: true });
+      streams[1].emit('message', text(5));
+    });
+    expect(summary()).toEqual(['text-0text-1text-2', 'steer', 'text-4text-5']);
+    expect(result.current?.lastActivitySequence).toBe(5);
+
+    unmount();
+    jest.useRealTimers();
+  });
+
   it('reconnects with bounded backoff after a transient stream error', () => {
     jest.useFakeTimers();
     const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
