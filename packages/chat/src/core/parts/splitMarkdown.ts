@@ -235,7 +235,7 @@ export function createMarkdownSplitter(): MarkdownSplitter {
   };
 }
 
-export const splitMarkdownIntoBlocks = createMarkdownSplitter();
+export const splitMarkdownIntoBlocks: MarkdownSplitter = createMarkdownSplitter();
 
 const blockCounts = (
   children: MdastNode[],
