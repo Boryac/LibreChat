@@ -52,7 +52,7 @@ async function selectAgent(page: Page, name: string): Promise<void> {
 }
 
 test.describe('detached subagent activity', () => {
-  test('streams two child runs into the shared panel and restores terminal activity', async ({
+  test('streams two child runs into the shared panel and restores terminal activity @scenario:subagent-panel-streams-child-activity-once', async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -259,7 +259,9 @@ async function historyThreadPath(
 
 test.describe('subagent chat retained-history parity', () => {
   for (const mode of ['normal chat', 'late open', 'cold reload'] as const) {
-    const name = `${mode} restores over-capacity history while running and completes once`;
+    const scenario =
+      mode === 'late open' ? ' @scenario:subagent-panel-replays-history-then-goes-live' : '';
+    const name = `${mode} restores over-capacity history while running and completes once${scenario}`;
     test(name, async ({ page, browser, baseURL }, testInfo) => {
       test.setTimeout(120_000);
       const prefix = `history-${mode.replaceAll(' ', '-')}`;
