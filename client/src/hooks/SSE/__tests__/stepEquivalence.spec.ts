@@ -10,6 +10,12 @@ import {
   ContentTypes,
   ToolCallTypes,
 } from 'librechat-data-provider';
+import {
+  subagentProgressKey,
+  subagentProgressByToolCallId,
+  takeRegisteredSubagentProgressKeys,
+  subagentParentStreamOpenByToolCallId,
+} from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -19,12 +25,6 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { StepEvent } from '@librechat/chat';
-import {
-  subagentProgressKey,
-  subagentProgressByToolCallId,
-  takeRegisteredSubagentProgressKeys,
-  subagentParentStreamOpenByToolCallId,
-} from '~/components/Chat/Subagents/state';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import useStepHandler from '~/hooks/SSE/useStepHandler';

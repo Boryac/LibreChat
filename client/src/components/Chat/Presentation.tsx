@@ -1,7 +1,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { useIsSubmitting } from '@librechat/chat/react';
+import { activeSubagentPanel, useIsSubmitting } from '@librechat/chat/react';
 import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
@@ -10,7 +10,6 @@ import { useDeleteFilesMutation, useGetStartupConfig } from '~/data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
 import { SidePanelGroup } from '~/components/SidePanel';

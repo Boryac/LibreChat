@@ -2,7 +2,6 @@ import React from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
 import { ContentTypes, QueryKeys, StepEvents } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import {
   reduceSubagentProgress,
   closeParentSubagentProgress,
@@ -10,7 +9,8 @@ import {
   subagentProgressByToolCallId,
   subagentProgressKey,
   takeRegisteredSubagentProgressKeys,
-} from '~/components/Chat/Subagents/state';
+} from '@librechat/chat/react';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import useSubagentActivityStream from './useSubagentActivityStream';
 import { IsolatedAtomStore } from 'test/harness';
 

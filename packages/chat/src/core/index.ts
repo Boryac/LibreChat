@@ -17,3 +17,5 @@ export * from './regenerate';
 export * from './content';
 export * from './turns';
 export * from './parts';
+export * from './subagents';
+export { strongDirection } from './direction';

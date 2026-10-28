@@ -9,14 +9,6 @@ import {
   createStreamState,
   subagentProgressKey,
 } from '@librechat/chat';
-import type {
-  TMessage,
-  EventSubmission,
-  SubagentUpdateEvent,
-  PtcToolCallEvent,
-} from 'librechat-data-provider';
-import type { StepEvent, StepEffect, StepContext, StreamState } from '@librechat/chat';
-import type { AnnounceOptions } from '~/common';
 import {
   activeSubagentPanel,
   closeParentSubagentProgress,
@@ -27,7 +19,15 @@ import {
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   takeRegisteredSubagentProgressKeys,
-} from '~/components/Chat/Subagents/state';
+} from '@librechat/chat/react';
+import type {
+  TMessage,
+  EventSubmission,
+  SubagentUpdateEvent,
+  PtcToolCallEvent,
+} from 'librechat-data-provider';
+import type { StepEvent, StepEffect, StepContext, StreamState } from '@librechat/chat';
+import type { AnnounceOptions } from '~/common';
 import { ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES, ptcTraceKey } from './ptc';
 import { sandboxStartingByToolCallId } from './sandbox';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';

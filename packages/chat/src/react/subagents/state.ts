@@ -14,11 +14,8 @@ import type {
 } from 'librechat-data-provider';
 import type { Getter, PrimitiveAtom, WritableAtom } from 'jotai';
 import type { SetStateAction } from 'react';
-import type {
-  SubagentAggregatorState,
-  SubagentContentPart,
-  SubagentTickerState,
-} from '~/utils/subagentContent';
+import type { SubagentAggregatorState, SubagentContentPart, SubagentTickerState } from '../../core';
+import type { Family } from '../steer/family';
 import {
   reconcileSubagentMessagePhases,
   reconcileSubagentToolTimings,
@@ -26,7 +23,7 @@ import {
   foldSubagentEventIntoTicker,
   initSubagentAggregatorState,
   initSubagentTickerState,
-} from '~/utils/subagentContent';
+} from '../../core';
 
 /**
  * Progress bucket captured per subagent tool call. Populated as
@@ -108,7 +105,7 @@ const MAX_SINGLE_ACTIVITY_ENCODED_BYTES = MAX_LIVE_ACTIVITY_BYTES - 2;
 const MAX_SINGLE_ACTIVITY_TEXT_BYTES = 60 * 1024;
 /** Substituted for reasoning text by pre-retention servers; current servers
  *  transport the bounded reasoning text itself. */
-export const REDACTED_REASONING_MARKER = '…';
+export const REDACTED_REASONING_MARKER: string = '…';
 
 const encodedBytes = (value: unknown): number =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -348,8 +345,9 @@ export type ActiveSubagentPanel = {
   };
 };
 
-export const activeSubagentPanel = atom<ActiveSubagentPanel | null>(null);
-export const subagentPanelFocusRequest = atom(0);
+export const activeSubagentPanel: PrimitiveAtom<ActiveSubagentPanel | null> =
+  atom<ActiveSubagentPanel | null>(null);
+export const subagentPanelFocusRequest: PrimitiveAtom<number> = atom(0);
 
 export type SubagentControlUiReceipt = Omit<SubagentControlReceipt, 'status'> & {
   status: SubagentControlReceipt['status'] | 'submitted';
@@ -469,34 +467,38 @@ const persistControlState = (identity: string, next: SubagentControlUiState | nu
  * durable receipts clear both copies after authoritative reconciliation. */
 const UNWRITTEN = Symbol('unwritten');
 
-export const subagentControlStateByTask = atomFamily<
-  string,
-  WritableAtom<SubagentControlUiState | null, [SetStateAction<SubagentControlUiState | null>], void>
->((identity: string) => {
-  /** Restored per store rather than per family member: a member is created
-   *  once for the tab, and a reload has to see what the last one persisted. */
-  const restored = atom(() => restoreControlState(identity));
-  const held: PrimitiveAtom<SubagentControlUiState | null | typeof UNWRITTEN> = atom(
-    UNWRITTEN as SubagentControlUiState | null | typeof UNWRITTEN,
-  );
-  const read = (get: Getter): SubagentControlUiState | null => {
-    const current = get(held);
-    return current === UNWRITTEN ? get(restored) : current;
-  };
-  return atom(read, (get, set, update: SetStateAction<SubagentControlUiState | null>) => {
-    const next =
-      typeof update === 'function'
-        ? (update as (previous: SubagentControlUiState | null) => SubagentControlUiState | null)(
-            read(get),
-          )
-        : update;
-    set(held, next);
-    persistControlState(identity, next);
+type ControlStateAtom = WritableAtom<
+  SubagentControlUiState | null,
+  [SetStateAction<SubagentControlUiState | null>],
+  void
+>;
+
+export const subagentControlStateByTask: Family<SubagentControlUiState | null, ControlStateAtom> =
+  atomFamily<string, ControlStateAtom>((identity: string) => {
+    /** Restored per store rather than per family member: a member is created
+     *  once for the tab, and a reload has to see what the last one persisted. */
+    const restored = atom(() => restoreControlState(identity));
+    const held: PrimitiveAtom<SubagentControlUiState | null | typeof UNWRITTEN> = atom(
+      UNWRITTEN as SubagentControlUiState | null | typeof UNWRITTEN,
+    );
+    const read = (get: Getter): SubagentControlUiState | null => {
+      const current = get(held);
+      return current === UNWRITTEN ? get(restored) : current;
+    };
+    return atom(read, (get, set, update: SetStateAction<SubagentControlUiState | null>) => {
+      const next =
+        typeof update === 'function'
+          ? (update as (previous: SubagentControlUiState | null) => SubagentControlUiState | null)(
+              read(get),
+            )
+          : update;
+      set(held, next);
+      persistControlState(identity, next);
+    });
   });
-});
 
 /** Stable identity for one subagent invocation in the parent conversation. */
-export { subagentProgressKey } from '@librechat/chat';
+export { subagentProgressKey } from '../../core';
 
 type NestedToolCallFields = {
   id?: string;
@@ -567,29 +569,38 @@ export function collectNestedCalls(
  * anything reads the member, since the bounded activity can evict a call that saved a file
  * before a reader mounts.
  */
-export const subagentProgressByToolCallId = atomFamily((key: string) => {
-  const progress = atom<SubagentProgress | null>(null);
-  return atom(
-    (get) => get(progress),
-    (get, set, next: SetStateAction<SubagentProgress | null>) => {
-      const value = typeof next === 'function' ? next(get(progress)) : next;
-      if (value != null) {
-        const segments = [value, ...(value.replaySegments ?? []).map(({ progress }) => progress)];
-        rememberSubagentChildCalls(
-          key,
-          segments.flatMap((segment) => [
-            ...(segment.aggregatorState?.evictedToolCalls ?? []),
-            ...collectNestedCalls(segment.contentParts, [], segment.subagentAgentId),
-          ]),
-        );
-      }
-      set(progress, value);
-    },
-  );
-});
+type ProgressAtom = WritableAtom<
+  SubagentProgress | null,
+  [SetStateAction<SubagentProgress | null>],
+  void
+>;
+
+export const subagentProgressByToolCallId: Family<SubagentProgress | null, ProgressAtom> =
+  atomFamily((key: string): ProgressAtom => {
+    const progress = atom<SubagentProgress | null>(null);
+    return atom(
+      (get) => get(progress),
+      (get, set, next: SetStateAction<SubagentProgress | null>) => {
+        const value = typeof next === 'function' ? next(get(progress)) : next;
+        if (value != null) {
+          const segments = [value, ...(value.replaySegments ?? []).map(({ progress }) => progress)];
+          rememberSubagentChildCalls(
+            key,
+            segments.flatMap((segment) => [
+              ...(segment.aggregatorState?.evictedToolCalls ?? []),
+              ...collectNestedCalls(segment.contentParts, [], segment.subagentAgentId),
+            ]),
+          );
+        }
+        set(progress, value);
+      },
+    );
+  });
 
 /** Parent delivery remains authoritative until its ordered SSE close boundary. */
-export const subagentParentStreamOpenByToolCallId = atomFamily((_key: string) => atom(false));
+export const subagentParentStreamOpenByToolCallId: Family<boolean> = atomFamily((_key: string) =>
+  atom(false),
+);
 
 /**
  * Invocation atoms populated by either the parent generation stream or the selected detached
@@ -905,7 +916,7 @@ export function reduceSubagentProgress(
   previous: SubagentProgress | null,
   events: SubagentUpdateEvent[],
   source: 'parent' | 'detached' = 'parent',
-  waitForEarlierSequences = source === 'parent',
+  waitForEarlierSequences: boolean = source === 'parent',
 ): SubagentProgress | null {
   if (events.length === 0) return previous;
   const repair =

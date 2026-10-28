@@ -9,6 +9,15 @@ import {
   ContentTypes,
   ToolCallTypes,
 } from 'librechat-data-provider';
+import {
+  activeSubagentPanel,
+  listRegisteredSubagentProgressKeys,
+  reduceSubagentProgress,
+  registerSubagentProgressKey,
+  subagentParentStreamOpenByToolCallId,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '@librechat/chat/react';
 import type {
   TMessageContentParts,
   SummaryContentPart,
@@ -20,17 +29,8 @@ import type {
   PtcToolCallEvent,
   Agents,
 } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { PtcTrace, PtcTraceEntry } from '~/common';
-import {
-  activeSubagentPanel,
-  listRegisteredSubagentProgressKeys,
-  reduceSubagentProgress,
-  registerSubagentProgressKey,
-  subagentParentStreamOpenByToolCallId,
-  subagentProgressByToolCallId,
-  subagentProgressKey,
-} from '~/components/Chat/Subagents/state';
 import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { resolveAskUserQuestionPart } from '~/utils/approval';

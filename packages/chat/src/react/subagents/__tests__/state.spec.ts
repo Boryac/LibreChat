@@ -1,9 +1,13 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
+import { TextEncoder } from 'node:util';
 import { ContentTypes } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
 import type { SubagentUpdateEvent } from 'librechat-data-provider';
-import type { SubagentProgress } from './state';
+import type { SubagentProgress } from '../state';
 import {
   closeParentSubagentProgress,
   reduceSubagentProgress,
@@ -17,7 +21,10 @@ import {
   subagentProgressKey,
   takeRegisteredSubagentProgressKeys,
   useSubagentProgress,
-} from './state';
+} from '../state';
+
+/** jsdom has no TextEncoder; the reducer measures payloads with it. */
+Object.assign(globalThis, { TextEncoder });
 
 const update = (overrides: Partial<SubagentUpdateEvent> = {}): SubagentUpdateEvent => ({
   runId: 'root-run',
@@ -466,7 +473,7 @@ describe('reduceSubagentProgress', () => {
 
     expect(bounded?.contentParts).toHaveLength(100);
     expect(continued?.contentParts).toHaveLength(100);
-    expect(continued?.contentParts.at(-1)).toEqual({
+    expect(continued?.contentParts.slice(-1)[0]).toEqual({
       type: ContentTypes.TEXT,
       text: 'Final answer.',
     });
@@ -740,7 +747,7 @@ describe('replay prefix projection reconciliation', () => {
     expect(
       new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
     ).toBeLessThanOrEqual(65_536);
-    expect(progress?.contentParts.at(-1)).toMatchObject({ tool_call: { id: 'tool-99' } });
+    expect(progress?.contentParts.slice(-1)[0]).toMatchObject({ tool_call: { id: 'tool-99' } });
   });
 });
 
@@ -1419,6 +1426,6 @@ describe('message-step phase replay provenance', () => {
     expect(
       new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
     ).toBeLessThanOrEqual(65_536);
-    expect(progress?.contentParts.at(-1)).toMatchObject({ stepId: 'message-109' });
+    expect(progress?.contentParts.slice(-1)[0]).toMatchObject({ stepId: 'message-109' });
   });
 });

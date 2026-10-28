@@ -12,6 +12,14 @@ import {
   useMediaQuery,
   useToastContext,
 } from '@librechat/client';
+import {
+  activeSubagentPanel,
+  subagentPanelFocusRequest,
+  subagentControlStateByTask,
+  subagentControlStateKey,
+  subagentProgressKey,
+  useSubagentProgress,
+} from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
   SubagentControlAction,
@@ -19,8 +27,8 @@ import type {
   SubagentControlRequest,
 } from 'librechat-data-provider';
 import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librechat/client';
+import type { ActiveSubagentPanel, SubagentControlUiState } from '@librechat/chat/react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { ActiveSubagentPanel, SubagentControlUiState } from './state';
 import type { ComposerKeyAction } from '~/utils/shortcuts';
 import type { OptionWithIcon } from '~/common';
 import {
@@ -38,14 +46,6 @@ import {
   mergeChildConversationTurns,
   retainBoundedMovingWindowTurns,
 } from './adapters';
-import {
-  activeSubagentPanel,
-  subagentPanelFocusRequest,
-  subagentControlStateByTask,
-  subagentControlStateKey,
-  subagentProgressKey,
-  useSubagentProgress,
-} from './state';
 import {
   agentAuthor,
   resolveSubagentAuthor,

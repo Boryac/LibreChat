@@ -4,7 +4,7 @@ import type {
   ToolTimingStamps,
   TSteerAppliedEvent,
 } from 'librechat-data-provider';
-import { strongDirection } from './direction';
+import { strongDirection } from '../direction';
 
 /**
  * Client-side helpers for rendering the live `SubagentCall` UI while
