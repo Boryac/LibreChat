@@ -3148,3 +3148,498 @@ describe('Chat lost starts across conversations and turns a retirement starts', 
     expect(h.finishes).toHaveLength(1);
   });
 });
+
+/** Table 1: every pause transition, the pause it leaves held, and the decisions it keeps. */
+describe('Chat pause lifecycle and its decision markers', () => {
+  const approval = {
+    ...askAction,
+    payload: {
+      type: 'tool_approval',
+      action_requests: [{ tool_call_id: 'tool-1' }, { tool_call_id: 'tool-2' }],
+    },
+  } as unknown as Agents.PendingAction;
+  const newer = { ...approval, actionId: 'action-2', createdAt: 2 } as Agents.PendingAction;
+  const sync = (pendingAction?: Agents.PendingAction) =>
+    ({
+      type: 'sync',
+      data: { sync: true, resumeState: { runSteps: [], ...(pendingAction && { pendingAction }) } },
+    }) as ChatEvent;
+  const reattached = async (h: Harness) => {
+    const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+    h.transport.reconnectToStream.mockResolvedValueOnce(stream);
+    h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await flush();
+    return stream;
+  };
+  const answerFails = (h: Harness, error: Error) => h.transport.resume.mockRejectedValueOnce(error);
+  const answerSecond = async (h: Harness) => {
+    await h.chat.addToolApprovalResponse({ id: 'tool-2', approved: true }).catch(() => undefined);
+    await flush();
+  };
+
+  type PauseRow = {
+    /** The pause held after the transition, or `null` when none is. */
+    held: string | null;
+    /**
+     * Decisions the next resume carries once the second call is answered: 2 when the first
+     * call's decision was kept, 0 when it was cleared and no resume is sent. Omitted when no pause
+     * is left to answer.
+     */
+    submitted?: number;
+  };
+
+  const rows: Array<[string, (h: Harness) => Promise<void>, PauseRow]> = [
+    [
+      'a status read restores the held pause again',
+      async (h) => h.chat.restorePendingAction({ ...approval }, 500),
+      { held: 'action-1', submitted: 2 },
+    ],
+    [
+      'a status read restores a newer pause of the generation',
+      async (h) => h.chat.restorePendingAction(newer, 500),
+      { held: 'action-2', submitted: 0 },
+    ],
+    [
+      'a sync snapshot omits the held pause',
+      async (h) => {
+        const stream = await reattached(h);
+        stream.push(sync());
+        await flush();
+      },
+      { held: null },
+    ],
+    [
+      'a sync snapshot omits the held pause and the stream reports it again',
+      async (h) => {
+        const stream = await reattached(h);
+        stream.push(sync());
+        stream.push({ type: 'pending_action', data: approval } as ChatEvent);
+        await flush();
+      },
+      { held: 'action-1', submitted: 2 },
+    ],
+    [
+      'a sync snapshot omits the held pause, the stream drops, and a status read restores it',
+      async (h) => {
+        const stream = await reattached(h);
+        stream.push(sync());
+        await flush();
+        stream.push(dropEvent);
+        await flush();
+        h.chat.restorePendingAction({ ...approval }, 500);
+      },
+      { held: 'action-1', submitted: 2 },
+    ],
+    [
+      'a sync snapshot names a newer pause',
+      async (h) => {
+        const stream = await reattached(h);
+        stream.push(sync(newer));
+        await flush();
+      },
+      { held: 'action-2', submitted: 0 },
+    ],
+    [
+      'the stream replays the held pause',
+      async (h) => {
+        const stream = await reattached(h);
+        stream.push({ type: 'pending_action', data: approval } as ChatEvent);
+        await flush();
+      },
+      { held: 'action-1', submitted: 2 },
+    ],
+    [
+      'the stream reports a newer pause',
+      async (h) => {
+        const stream = await reattached(h);
+        stream.push({ type: 'pending_action', data: newer } as ChatEvent);
+        await flush();
+      },
+      { held: 'action-2', submitted: 0 },
+    ],
+    [
+      'its expiry passes with no answer in flight',
+      async (h) => {
+        h.chat.restorePendingAction({ ...approval, expiresAt: Date.now() + 20 }, 500);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      },
+      { held: null },
+    ],
+    [
+      'its expiry passes while an answer is in flight, and the answer fails',
+      async (h) => {
+        h.chat.restorePendingAction({ ...approval, expiresAt: Date.now() + 20 }, 500);
+        let refuse: (error: Error) => void = () => undefined;
+        h.transport.resume.mockImplementationOnce(
+          () =>
+            new Promise<never>((_, reject) => {
+              refuse = reject;
+            }),
+        );
+        const answered = h.chat.addToolApprovalResponse({ id: 'tool-2', approved: true });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        refuse(Object.assign(new Error('Unavailable'), { response: { status: 503 } }));
+        await answered.catch(() => undefined);
+        await flush();
+      },
+      { held: null },
+    ],
+    [
+      'the answer is accepted, and a status read of that pause comes late',
+      async (h) => {
+        await answerSecond(h);
+        h.chat.restorePendingAction({ ...approval }, 500);
+      },
+      { held: null },
+    ],
+    [
+      'the answer is lost on the network',
+      async (h) => {
+        answerFails(h, networkError());
+        await answerSecond(h);
+      },
+      { held: null },
+    ],
+    [
+      'the answer is refused because the pause is over (409)',
+      async (h) => {
+        answerFails(
+          h,
+          Object.assign(new Error('Conflict'), {
+            response: { status: 409, data: { code: 'RUN_REPLACED' }, headers: {} },
+          }),
+        );
+        await answerSecond(h);
+      },
+      { held: null },
+    ],
+    [
+      'the answer is refused because the server is not ready yet',
+      async (h) => {
+        answerFails(
+          h,
+          Object.assign(new Error('Not ready'), {
+            response: { status: 409, data: { code: 'EVENT_ACTOR_NOT_READY' }, headers: {} },
+          }),
+        );
+        await answerSecond(h);
+      },
+      { held: 'action-1', submitted: 2 },
+    ],
+    [
+      'the held pause is stopped',
+      async (h) => {
+        await h.chat.stop();
+        await flush();
+      },
+      { held: null },
+    ],
+  ];
+
+  it.each(rows)('%s', async (_transition, drive, expected) => {
+    const h = createHarness();
+    h.chat.restorePendingAction(approval, 500);
+    await h.chat.addToolApprovalResponse({ id: 'tool-1', approved: true });
+    await drive(h);
+
+    expect(h.chat.pendingAction?.actionId ?? null).toBe(expected.held);
+    if (expected.submitted === undefined) {
+      return;
+    }
+    const before = h.transport.resume.mock.calls.length;
+    h.transport.resume.mockClear();
+    await answerSecond(h);
+    const calls = h.transport.resume.mock.calls as unknown as Array<[{ decisions?: unknown[] }]>;
+    expect(calls.length > 0 ? (calls[calls.length - 1][0].decisions?.length ?? 0) : 0).toBe(
+      expected.submitted,
+    );
+    expect(before).toBeGreaterThanOrEqual(0);
+  });
+});
+
+/** Table 2: every path a lost start can take, and what a stop answers after it. */
+describe('Chat lost-start resolution', () => {
+  const lose = async (h: Harness) => {
+    h.transport.sendMessages.mockRejectedValueOnce(networkError());
+    await h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+  };
+  const retry = async (h: Harness, conversationId: string) => {
+    const stream = createStream({ streamId: conversationId, generationCreatedAt: 200 });
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream });
+    const sent = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+    await flush();
+    stream.push({
+      type: 'sync',
+      data: { conversationId, responseMessage: placeholder },
+    } as ChatEvent);
+    stream.push(finalEvent());
+    await sent;
+  };
+
+  const rows: Array<[string, string, (h: Harness) => Promise<void>, ChatStopResult['status']]> = [
+    ['nothing else happens', 'convo-1', async () => undefined, 'unaddressable'],
+    [
+      'a retry the server takes in the same conversation',
+      'convo-1',
+      (h) => retry(h, 'convo-1'),
+      'idle',
+    ],
+    [
+      'a retry under `new`, which the server files under another conversation',
+      'new',
+      (h) => retry(h, 'convo-9'),
+      'unaddressable',
+    ],
+    [
+      'a retry that fails before the server takes it',
+      'convo-1',
+      async (h) => {
+        h.transport.sendMessages.mockRejectedValueOnce(networkError());
+        await h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+      },
+      'unaddressable',
+    ],
+    [
+      'a stop, which cannot name it',
+      'convo-1',
+      async (h) => {
+        await h.chat.stop();
+      },
+      'unaddressable',
+    ],
+    [
+      'a reconnect the server answers for its conversation',
+      'convo-1',
+      async (h) => {
+        h.transport.reconnectToStream.mockResolvedValueOnce(null);
+        await h.chat.resumeStream({ streamId: 'convo-1' });
+        await flush();
+      },
+      'idle',
+    ],
+    [
+      'a reconnect while it was sent under `new`',
+      'new',
+      async (h) => {
+        h.transport.reconnectToStream.mockResolvedValueOnce(null);
+        await h.chat.resumeStream({ streamId: 'convo-9' });
+        await flush();
+      },
+      'unaddressable',
+    ],
+    [
+      'a status read that restores a pause',
+      'convo-1',
+      async (h) => h.chat.restorePendingAction(askAction, 500),
+      'unaddressable',
+    ],
+    ['the chat is disposed', 'convo-1', async (h) => h.chat.dispose(), 'idle'],
+  ];
+
+  it.each(rows)('after %s', async (_path, id, drive, expected) => {
+    const h = createHarness({ id });
+    await lose(h);
+    await drive(h);
+
+    expect((await h.chat.stop()).status).toBe(expected);
+  });
+
+  it('after the cancelled start answers late that the server already finished it', async () => {
+    const h = createHarness();
+    await states.starting(h);
+    await events.lateSettled(h);
+
+    expect(h.after).toBe('idle');
+  });
+});
+
+/**
+ * Table 3: every place the core notifies subscribers. The rule: a request installs its ownership
+ * (the active record, or the pause it is answering) before any notify, and an entry point that
+ * notifies before it owns the chat rechecks afterwards, so a subscriber that starts a turn is
+ * neither overwritten nor run twice.
+ */
+describe('Chat notify ordering and request ownership', () => {
+  const startOnNotify = (h: Harness, when: () => boolean) => {
+    const attempt: { started?: boolean; sent?: Promise<void>; error?: string } = {};
+    const unsubscribe = h.chat.subscribe(() => {
+      if (attempt.started || !when()) {
+        return;
+      }
+      /** Set before the call, since the turn it starts notifies of its own status first. */
+      attempt.started = true;
+      attempt.sent = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Queued' }] });
+      attempt.sent.catch((error: Error) => {
+        attempt.error = error.message;
+      });
+    });
+    return { attempt, unsubscribe };
+  };
+
+  it('a request that retires an expired pause yields to the turn a subscriber started', async () => {
+    const h = createHarness();
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+    h.chat.restorePendingAction({ ...askAction, expiresAt: Date.now() + 60_000 }, 500);
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+    const { unsubscribe } = startOnNotify(h, () => !h.chat.pendingAction);
+    try {
+      await expect(h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] })).rejects.toThrow(
+        'already in flight',
+      );
+    } finally {
+      now.mockRestore();
+      unsubscribe();
+    }
+    await flush();
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('a request owns the chat before it notifies that it was submitted', async () => {
+    const h = createHarness();
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+    const { attempt, unsubscribe } = startOnNotify(h, () => h.chat.status === 'submitted');
+    send(h);
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error).toContain('already in flight');
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reattachment yields to a turn the host starts while it selects the endpoint', async () => {
+    let started = false;
+    const h = createHarness({
+      resumeSelection: () => {
+        if (!started) {
+          started = true;
+          send(h);
+        }
+        return { endpoint: 'agents' };
+      },
+    });
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+    await h.chat.resumeStream({ streamId: 'convo-1' });
+    await flush();
+
+    expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reattachment owns the chat before it clears a pause it supersedes', async () => {
+    const h = createHarness();
+    h.chat.restorePendingAction(askAction, 500);
+    h.transport.reconnectToStream.mockImplementation(() => new Promise(() => undefined));
+    const { attempt, unsubscribe } = startOnNotify(h, () => !h.chat.pendingAction);
+    h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 900 }).catch(() => undefined);
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error).toContain('already in flight');
+    expect(h.transport.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('a streamed frame notifies while the request still owns the chat', async () => {
+    const h = createHarness();
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+    send(h);
+    await flush();
+    const { attempt, unsubscribe } = startOnNotify(h, () => h.chat.status === 'streaming');
+    h.stream?.push(stepEvent);
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error).toContain('already in flight');
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('a turn that ends notifies after it released the chat, so the next turn owns it', async () => {
+    const h = createHarness();
+    await states.attached(h);
+    const next = createStream({ streamId: 'convo-1', generationCreatedAt: 300 });
+    const { attempt, unsubscribe } = startOnNotify(h, () => h.chat.status === 'ready');
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream: next });
+    h.stream?.push(finalEvent());
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error).toBeUndefined();
+    expect(h.chat.status).toBe('submitted');
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('an approval write notifies after the pause is held, so a second answer sends one resume', async () => {
+    const approval = {
+      ...askAction,
+      payload: {
+        type: 'tool_approval',
+        action_requests: [{ tool_call_id: 'tool-1' }, { tool_call_id: 'tool-2' }],
+      },
+    } as unknown as Agents.PendingAction;
+    const h = createHarness({ messages: [userMessage, placeholder] });
+    h.chat.restorePendingAction(approval, 500);
+    await h.chat.addToolApprovalResponse({ id: 'tool-1', approved: true });
+    let answered: Promise<void> | undefined;
+    const unsubscribe = h.chat.subscribe(() => {
+      answered ??= h.chat.addToolApprovalResponse({ id: 'tool-2', approved: true });
+    });
+    await h.chat.addToolApprovalResponse({ id: 'tool-2', approved: true }).catch(() => undefined);
+    await answered?.catch(() => undefined);
+    await flush();
+    unsubscribe();
+
+    expect(h.transport.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('a status read that restores a pause notifies with the pause held, which blocks a turn', async () => {
+    const h = createHarness();
+    const { attempt, unsubscribe } = startOnNotify(h, () => true);
+    h.chat.restorePendingAction(askAction, 500);
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error).toContain('waiting for a decision');
+    expect(h.transport.sendMessages).not.toHaveBeenCalled();
+  });
+
+  it('a stop of a dropped generation notifies after it let the chat go, so the next turn owns it', async () => {
+    const h = createHarness();
+    await states.detached(h);
+    const next = createStream({ streamId: 'convo-1', generationCreatedAt: 300 });
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream: next });
+    const { attempt, unsubscribe } = startOnNotify(h, () => h.chat.status === 'ready');
+    await h.chat.stop();
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error).toBeUndefined();
+    expect(h.chat.status).toBe('submitted');
+  });
+
+  it('an expiry the timer retires notifies with nothing owned, so the turn a subscriber starts runs', async () => {
+    const h = createHarness();
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+    const { attempt, unsubscribe } = startOnNotify(h, () => !h.chat.pendingAction);
+    h.chat.restorePendingAction({ ...askAction, expiresAt: Date.now() + 20 }, 500);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error).toBeUndefined();
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dispose notifies after the chat is disposed, so a turn a subscriber starts is refused', async () => {
+    const h = createHarness();
+    await states.attached(h);
+    const { attempt, unsubscribe } = startOnNotify(h, () => true);
+    h.chat.dispose();
+    await flush();
+    unsubscribe();
+
+    expect(attempt.error ?? 'none').not.toBe('none');
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+  });
+});
