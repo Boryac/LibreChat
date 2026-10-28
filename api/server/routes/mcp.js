@@ -11,6 +11,8 @@ const {
 const {
   getBasePath,
   runMCPConnectionAttempt,
+  validateMCPConnectionAttemptId,
+  getMCPConnectionAttemptErrorResponse,
   getUnavailableMCPServerStatus,
   resolveMCPReinitializeConfig,
   resolveMCPClientCapabilityProfile,
@@ -936,6 +938,7 @@ router.post(
   setOAuthSession,
   async (req, res, next) => {
     try {
+      const attemptId = validateMCPConnectionAttemptId(req.body?.attemptId);
       const { serverName } = req.params;
       const user = createSafeUser(req.user);
 
@@ -995,7 +998,7 @@ router.post(
       );
       const result = await runMCPConnectionAttempt(
         {
-          attemptId: req.body?.attemptId,
+          attemptId,
           userId: user.id,
           serverName,
           serverConfig,
@@ -1083,8 +1086,8 @@ router.post(
       ) {
         return next(error);
       }
-      logger.error('[MCP Reinitialize] Unexpected error', error);
-      res.status(500).json({ error: 'Internal server error' });
+      const { status, body } = getMCPConnectionAttemptErrorResponse(error);
+      res.status(status).json(body);
     }
   },
 );

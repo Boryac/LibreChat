@@ -46,28 +46,7 @@ export const useMCPConnectionStatusQuery = (
 ): QueryObserverResult<t.MCPConnectionStatusResponse> => {
   return useQuery<t.MCPConnectionStatusResponse>(
     [QueryKeys.mcpConnectionStatus],
-    async () => {
-      const started = Date.now();
-      const response = await dataService.getMCPConnectionStatus();
-      const elapsed = Date.now() - started;
-      return {
-        ...response,
-        connectionStatus: Object.fromEntries(
-          Object.entries(response.connectionStatus).map(([name, status]) => [
-            name,
-            {
-              ...status,
-              ...(status.connectionAttempt && {
-                connectionAttempt: {
-                  ...status.connectionAttempt,
-                  remainingMs: Math.max(0, status.connectionAttempt.remainingMs - elapsed),
-                },
-              }),
-            },
-          ]),
-        ),
-      };
-    },
+    () => dataService.getMCPConnectionStatus(),
     {
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,

@@ -2979,6 +2979,33 @@ describe('MCP Routes', () => {
   describe('POST /:serverName/reinitialize', () => {
     // mockRegistryInstance is defined at the top of the file
 
+    it('rejects malformed operation IDs with 400 before resetting or connecting a transport', async () => {
+      const api = require('@librechat/api');
+      const implementation = api.runMCPConnectionAttempt.getMockImplementation();
+      api.runMCPConnectionAttempt.mockImplementation(
+        jest.requireActual('@librechat/api').runMCPConnectionAttempt,
+      );
+      const manager = { disconnectUserConnection: jest.fn().mockResolvedValue(), mcpConfigs: {} };
+      mockRegistryInstance.getServerConfig.mockResolvedValue({
+        type: 'streamable-http',
+        url: 'https://mcp.example/mcp',
+      });
+      require('~/config').getMCPManager.mockReturnValue(manager);
+      require('~/config').getFlowStateManager.mockReturnValue({});
+      require('~/cache').getLogStores.mockReturnValue({});
+      try {
+        const response = await request(app)
+          .post('/api/mcp/server/reinitialize')
+          .send({ attemptId: 'invalid-operation' });
+        expect(response.status).toBe(400);
+        expect(response.body).toEqual({ error: 'Invalid MCP operation identifier' });
+        expect(manager.disconnectUserConnection).not.toHaveBeenCalled();
+        expect(require('~/server/services/Tools/mcp').reinitMCPServer).not.toHaveBeenCalled();
+      } finally {
+        api.runMCPConnectionAttempt.mockImplementation(implementation);
+      }
+    });
+
     it('should return 404 when server is not found in configuration', async () => {
       const mockMcpManager = {
         disconnectUserConnection: jest.fn().mockResolvedValue(),

@@ -105,7 +105,16 @@ export async function getMCPServerConnectionStatus<Context>(
     : 'not_required';
 
   // connection state overrides specific to OAuth servers
-  if (effectiveOAuth && baseConnectionState === 'connected') {
+  if (shared?.statusUnavailable && effectiveOAuth) {
+    authorizationState = (await deps.hasDurableAuthorization(
+      userId,
+      serverName,
+      config,
+      runtimeContext,
+    ))
+      ? 'authorized'
+      : 'needs_authorization';
+  } else if (effectiveOAuth && baseConnectionState === 'connected') {
     authorizationState = 'authorized';
   } else if (effectiveOAuth && baseConnectionState === 'connecting') {
     authorizationState = 'authorizing';
@@ -140,7 +149,7 @@ export async function getMCPServerConnectionStatus<Context>(
   const statusUnavailable =
     finalConnectionState === 'disconnected' &&
     !requestScoped &&
-    authorizationState !== 'needs_authorization';
+    (shared?.statusUnavailable === true || authorizationState !== 'needs_authorization');
   return {
     ...(shared && {
       connectionAttempt: projectMCPConnectionAttempt(shared, observation?.generation),

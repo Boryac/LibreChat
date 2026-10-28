@@ -122,6 +122,33 @@ describe('Connect outcomes and evidence freshness', () => {
       jest.useRealTimers();
       jest.restoreAllMocks();
     });
+    it('preserves remaining freshness sampled after a slow status calculation', async () => {
+      let resolve!: (value: MCPConnectionStatusResponse) => void;
+      jest.spyOn(dataService, 'getMCPConnectionStatus').mockImplementation(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      );
+      const { result, unmount } = renderHook(() => useMCPConnectionStatus(), { wrapper });
+      act(() => {
+        void client.invalidateQueries([QueryKeys.mcpConnectionStatus]);
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(2000);
+        resolve({ success: true, connectionStatus: { server: success } });
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(10);
+      });
+      expect(result.current.connectionStatus?.server.connectionState).toBe('connected');
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+      expect(result.current.connectionStatus?.server.connectionState).toBe('connected');
+      unmount();
+    });
+
     it('expires green in a focused browser without a refetch or transport heartbeat', async () => {
       const get = jest.spyOn(dataService, 'getMCPConnectionStatus');
       const { result, unmount } = renderHook(() => useMCPConnectionStatus(), { wrapper });

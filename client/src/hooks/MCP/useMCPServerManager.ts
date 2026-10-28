@@ -516,7 +516,6 @@ export function useMCPServerManager({
        * attempt can never be mistaken for this attempt's outcome. */
       updateServerInitState(serverName, { isInitializing: true, connectionDeferred: false });
       const requestId = crypto.randomUUID();
-      const requestedAt = Date.now();
       const previous = queryClient.getQueryData<MCPConnectionStatusResponse>([
         QueryKeys.mcpConnectionStatus,
       ])?.connectionStatus[serverName];
@@ -565,19 +564,11 @@ export function useMCPServerManager({
               response.connectionAttempt?.authorizationGeneration ??
               previous?.authorizationGeneration,
             connectionState: response.statusUnavailable ? 'disconnected' : outcomeState,
-            connectionAttempt: response.connectionAttempt
-              ? {
-                  ...response.connectionAttempt,
-                  remainingMs: Math.max(
-                    0,
-                    response.connectionAttempt.remainingMs - (Date.now() - requestedAt),
-                  ),
-                }
-              : {
-                  attemptId: requestId,
-                  state: response.success ? 'connected' : 'error',
-                  remainingMs: 0,
-                },
+            connectionAttempt: response.connectionAttempt ?? {
+              attemptId: requestId,
+              state: response.success ? 'connected' : 'error',
+              remainingMs: 0,
+            },
             statusUnavailable: response.statusUnavailable === true,
           });
         } else {

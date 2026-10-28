@@ -17,10 +17,43 @@ import {
 import type { TPreset } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
+import { mcpConnectionResultsAtom, mcpServerInitStatesAtom } from '~/store/mcp';
 import useClearStates from '../useClearStates';
 import store from '~/store';
 
 describe('useClearStates', () => {
+  it('clears both Connect results and initialization controls at a session boundary', async () => {
+    const jotaiStore = createStore();
+    jotaiStore.set(mcpConnectionResultsAtom, {
+      server: {
+        status: { requiresOAuth: true, connectionState: 'connecting' },
+        pending: true,
+        receivedAt: Date.now(),
+        requestId: 'old-session',
+      },
+    });
+    jotaiStore.set(mcpServerInitStatesAtom, {
+      server: {
+        isInitializing: true,
+        isCancellable: true,
+        oauthUrl: 'https://auth.example/consent',
+        oauthStartTime: Date.now(),
+        connectionDeferred: false,
+      },
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <JotaiProvider store={jotaiStore}>
+        <RecoilRoot>{children}</RecoilRoot>
+      </JotaiProvider>
+    );
+    const { result } = renderHook(() => useClearStates(), { wrapper });
+    await act(async () => {
+      await result.current();
+    });
+    expect(jotaiStore.get(mcpConnectionResultsAtom)).toEqual({});
+    expect(jotaiStore.get(mcpServerInitStatesAtom)).toEqual({});
+  });
+
   /* Jotai's default store outlives the authenticated route, so a file manager
      left open at logout would otherwise reopen for the next session with the
      previous session's opener still attached. */

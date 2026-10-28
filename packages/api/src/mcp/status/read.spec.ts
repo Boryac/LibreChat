@@ -78,4 +78,18 @@ describe('shared MCP connection status', () => {
     ).toMatchObject({ connectionState: 'connected', authorizationState: 'authorized' });
     expect(deps.hasDurableAuthorization).toHaveBeenCalled();
   });
+  it('does not revive an unconfirmed OAuth handoff from its orphaned active flow', async () => {
+    const deps = dependencies({
+      ...observation('error'),
+      requiresOAuth: true,
+      statusUnavailable: true,
+    });
+    deps.checkOAuthFlowStatus.mockResolvedValue({ hasActiveFlow: true, hasFailedFlow: false });
+    expect(await getMCPServerConnectionStatus(params, deps)).toMatchObject({
+      connectionState: 'disconnected',
+      statusUnavailable: true,
+      authorizationState: 'authorized',
+    });
+    expect(deps.checkOAuthFlowStatus).not.toHaveBeenCalled();
+  });
 });

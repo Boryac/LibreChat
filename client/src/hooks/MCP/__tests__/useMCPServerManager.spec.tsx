@@ -187,6 +187,42 @@ describe('useMCPServerManager initialization', () => {
     queryClient.clear();
   });
 
+  it('preserves fresh evidence returned after slow initialization', async () => {
+    jest.useFakeTimers();
+    mockReinitialize.mockReset();
+    const connection = deferred<MCPReinitializeResponse>();
+    mockReinitialize.mockReturnValue(connection.promise);
+    const state = createStore();
+    const queryClient = new QueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={state}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </Provider>
+    );
+    const { result, unmount } = renderHook(() => useMCPServerManager(), { wrapper });
+    try {
+      act(() => {
+        void result.current.initializeServer('test-server');
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(10000);
+        connection.resolve({
+          success: true,
+          message: 'Connected',
+          serverName: 'test-server',
+          connectionAttempt: { attemptId: 'slow', state: 'connected', remainingMs: 1000 },
+        });
+      });
+      expect(
+        state.get(mcpConnectionResultsAtom)['test-server'].status.connectionAttempt?.remainingMs,
+      ).toBe(1000);
+    } finally {
+      unmount();
+      queryClient.clear();
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps passive authorization observers opt-in for shared hook callers', () => {
     const queryClient = new QueryClient();
     const wrapper = ({ children }: { children: React.ReactNode }) => (

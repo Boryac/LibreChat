@@ -12,6 +12,7 @@ import type { MCPClientCapabilityProfile } from '../capabilities';
 import type { ParsedServerConfig } from '../types';
 import { getMCPToolCatalogGeneration } from '../toolsChanged';
 import { projectMCPConnectionAttempt } from './projection';
+import { validateMCPConnectionAttemptId } from './request';
 import { requiresEphemeralUserConnection } from '../utils';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
@@ -112,12 +113,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
   | undefined
 > {
   const policy = { ...DEFAULT_MCP_CONNECTION_STATUS_POLICY, ...params.policy };
-  if (
-    params.attemptId != null &&
-    (typeof params.attemptId !== 'string' ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.attemptId))
-  )
-    throw new Error('Invalid MCP operation identifier');
+  const attemptId = validateMCPConnectionAttemptId(params.attemptId);
   if (requiresEphemeralUserConnection(params.serverConfig)) {
     return deps.connect(
       () => {},
@@ -147,7 +143,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
       publicationGeneration: generation,
     };
     const record: MCPConnectionStateRecord = {
-      attemptId: params.attemptId ?? randomUUID(),
+      attemptId: attemptId ?? randomUUID(),
       state: 'connecting',
       startedAt: Date.now(),
       deadline,
@@ -156,14 +152,28 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
     const retainedTtl =
       policy.attemptTimeoutMs + Math.max(policy.resultRetentionMs, policy.evidenceFreshnessMs);
     if (!(await withDeadline(setState(scope, record, retainedTtl, true), budget))) {
-      throw new Error('MCP connection attempt was superseded');
+      throw new MCPStatusUnavailableError('MCP connection attempt was superseded');
     }
     // Read back the admission timestamp/deadline assigned atomically by the shared store.
     const admitted = await withDeadline(getState(scope), budget);
     if (!admitted || admitted.attemptId !== record.attemptId) {
-      throw new Error('MCP connection attempt was superseded');
+      throw new MCPStatusUnavailableError('MCP connection attempt was superseded');
     }
     Object.assign(record, admitted);
+    const complete = async (terminal: MCPConnectionStateRecord): Promise<MCPConnectionAttempt> => {
+      if (!(await withDeadline(setState(scope, terminal, retainedTtl), signal))) {
+        throw new MCPStatusUnavailableError('MCP connection attempt was superseded or expired');
+      }
+      const committed = await withDeadline(getState(scope), signal);
+      if (
+        !committed ||
+        committed.attemptId !== record.attemptId ||
+        committed.state !== terminal.state
+      ) {
+        throw new MCPStatusUnavailableError('MCP connection outcome could not be confirmed');
+      }
+      return projectMCPConnectionAttempt(committed, scope.publicationGeneration);
+    };
     let connection: ObservedMCPConnection | undefined;
     let verified = false;
     try {
@@ -173,13 +183,9 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
         signal,
       );
       if (resolution.result) {
-        await withDeadline(setState(scope, { ...record, state: 'error' }, retainedTtl), signal);
         return {
           ...resolution.result,
-          connectionAttempt: projectMCPConnectionAttempt(
-            { ...record, state: 'error' },
-            scope.publicationGeneration,
-          ),
+          connectionAttempt: await complete({ ...record, state: 'error' }),
         };
       }
       const serverConfig = resolution.serverConfig ?? params.serverConfig;
@@ -189,7 +195,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
         if (
           !(await withDeadline(setState(scope, { ...record, deadline }, retainedTtl, true), signal))
         )
-          throw new Error('MCP connection attempt was superseded');
+          throw new MCPStatusUnavailableError('MCP connection attempt was superseded');
       }
       const result = await withDeadline(
         deps.connect(
@@ -205,31 +211,17 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
         record.requiresOAuth = result.oauthRequired === true;
         // OAuth has its own guarded flow and readiness reinitialization. A deferred
         // chat-scoped connection likewise cannot be advertised as a verified transport.
-        await withDeadline(
-          setState(scope, { ...record, state: 'disconnected' }, retainedTtl),
-          signal,
-        );
         return {
           ...result,
-          connectionAttempt: projectMCPConnectionAttempt(
-            { ...record, state: 'disconnected' },
-            scope.publicationGeneration,
-          ),
+          connectionAttempt: await complete({ ...record, state: 'disconnected' }),
         };
       }
       if (!result?.success || !connection) {
-        await withDeadline(setState(scope, { ...record, state: 'error' }, retainedTtl), signal);
+        const connectionAttempt = await complete({ ...record, state: 'error' });
         if (result?.success) throw new Error('MCP connection verification failed');
-        return (
-          result && {
-            ...result,
-            connectionAttempt: projectMCPConnectionAttempt(
-              { ...record, state: 'error' },
-              scope.publicationGeneration,
-            ),
-          }
-        );
+        return result && { ...result, connectionAttempt };
       }
+
       record.requiresOAuth = connection.usesOAuth?.() === true;
       const connectionGeneration = deps.getConnectionGeneration?.(connection);
       if (connectionGeneration && connectionGeneration !== scope.publicationGeneration) {
@@ -242,7 +234,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
             signal,
           ))
         ) {
-          throw new Error('MCP connection attempt was superseded');
+          throw new MCPStatusUnavailableError('MCP connection attempt was superseded');
         }
       }
       if (!(await withDeadline(connection.isConnected(signal, true), signal))) {
@@ -254,21 +246,7 @@ export async function runMCPConnectionAttempt<T extends AttemptResult>(
         state: 'connected',
         verifiedUntil: Date.now() + policy.evidenceFreshnessMs,
       };
-      if (!(await withDeadline(setState(scope, completed, retainedTtl), signal))) {
-        throw new MCPStatusUnavailableError('MCP connection attempt was superseded or expired');
-      }
-      const committed = await withDeadline(getState(scope), signal);
-      if (
-        !committed ||
-        committed.attemptId !== record.attemptId ||
-        committed.state !== 'connected'
-      ) {
-        throw new MCPStatusUnavailableError('MCP connection outcome could not be confirmed');
-      }
-      return {
-        ...result,
-        connectionAttempt: projectMCPConnectionAttempt(committed, scope.publicationGeneration),
-      };
+      return { ...result, connectionAttempt: await complete(completed) };
     } catch (error) {
       try {
         await withDeadline(

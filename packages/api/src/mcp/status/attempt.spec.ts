@@ -280,4 +280,30 @@ describe('bounded explicit Connect operations', () => {
       ),
     ).toBe(false);
   });
+  it.each(['revoked', 'superseded'] as const)(
+    'does not expose an OAuth handoff when terminal publication is %s',
+    async (mode) => {
+      const f = fixture();
+      const result = await runMCPConnectionAttempt(f.params, {
+        ...f.deps,
+        connect: async () => {
+          if (mode === 'revoked') await f.store.invalidateCachedTools(f.params);
+          else
+            await f.store.setMCPConnectionState(
+              f.scope(),
+              { attemptId: 'peer', state: 'connecting', deadline: Date.now() + 1000 },
+              10000,
+              true,
+            );
+          return { success: true, oauthRequired: true, oauthUrl: 'https://auth.example/consent' };
+        },
+      });
+      expect(result).toMatchObject({
+        success: false,
+        statusUnavailable: true,
+        oauthRequired: false,
+        oauthUrl: null,
+      });
+    },
+  );
 });
