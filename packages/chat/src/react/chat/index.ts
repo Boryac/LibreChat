@@ -1,5 +1,7 @@
 export { useChat } from './chat';
 export { ChatProvider } from './provider';
+export { ChatSessionProvider } from './session';
+export type { ChatSessionMessages } from './session';
 export { default as useChatHelpers } from './helpers';
 export { useAbortCleanup } from './abort';
 export { getMessageCacheIds, getMessagesConversationId } from './cache';
@@ -11,10 +13,12 @@ export type {
   TurnServices,
   ChatTurnsParams,
   ChatMessageCache,
+  ChatMessagesQuery,
   TurnCodeDecision,
   AbortStreamParams,
   AbortStreamResponse,
   ChatPaneConversation,
+  ChatSessionEffectsParams,
 } from './host';
 export { useChatActions } from './actions';
 export { getChatStatus, isEmptyContentPart } from './status';

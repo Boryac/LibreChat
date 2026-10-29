@@ -8,8 +8,9 @@ import { Constants, buildTree } from 'librechat-data-provider';
 import { QueuedTurnPortalProvider } from '@librechat/chat/components';
 import {
   submissionByIndex,
-  ComposerRestoreProvider,
   composerLiftFamily,
+  ChatSessionProvider,
+  ComposerRestoreProvider,
 } from '@librechat/chat/react';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
@@ -21,7 +22,6 @@ import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
-import { ChatSessionProvider } from '~/hooks/Chat/provider';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { AskAnswerHostProvider } from './ask/state';
 import MessagesView from './Messages/MessagesView';

@@ -1,16 +1,17 @@
 import { useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { QueryKeys } from 'librechat-data-provider';
+import { Constants, QueryKeys } from 'librechat-data-provider';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
+import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
-import type { ChatHost, ChatMessageCache } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
+import { useAdaptiveSSE, useResumeOnLoad } from '~/hooks/SSE';
 import { getMappingOptions } from '~/hooks/Chat/outcomes';
-import { useAbortStreamMutation } from '~/data-provider';
 import useTurnServices from '~/hooks/Chat/services';
 import useNewConvo from '~/hooks/useNewConvo';
 
@@ -72,6 +73,28 @@ function useMessageCache(): ChatMessageCache {
   return useMemo(() => createMessageCache(queryClient), [queryClient]);
 }
 
+/** The conversation's messages query. Refetches stale caches on mount: navigation invalidates
+ *  (not removes) messages, so a warm conversation renders instantly from cache and reconciles in
+ *  the background instead of unmounting into a spinner. */
+function useMessages(
+  conversationId: string | undefined,
+  { isStreaming }: { isStreaming: boolean },
+): ChatMessagesQuery {
+  const {
+    data = null,
+    isLoading,
+    isFetching,
+  } = useGetMessagesByConvoId(
+    conversationId ?? '',
+    {
+      enabled: !!conversationId && conversationId !== Constants.SEARCH,
+      refetchOnMount: true,
+    },
+    { isStreaming },
+  );
+  return { messages: data, isLoading, isFetching };
+}
+
 /** The app's services behind `useChatHelpers`: its pane store, message query cache, turn
  *  services, thread selection, transport and settings. */
 export const appChatHost: ChatHost = {
@@ -88,6 +111,11 @@ export const appChatHost: ChatHost = {
   useLiveAttachments: () => useAtomValue(messageAttachmentsMapAtom),
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
   getMappingOptions,
+  useMessages,
+  useSessionEffects: ({ index, conversationId, chat, submission, isSettled }) => {
+    useAdaptiveSSE(submission, chat, false, index);
+    useResumeOnLoad(conversationId, chat.getMessages, index, isSettled);
+  },
 };
 
 export { ChatHostProvider, useChatHost } from '@librechat/chat/react';

@@ -27,16 +27,21 @@ jest.mock('librechat-data-provider', () => ({
   buildTree: ({ messages }: { messages: unknown[] }) => messages,
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useChatHelpers: () => ({
-    conversation: mockConversation,
-    getMessages: jest.fn(),
-    ask: jest.fn(),
-  }),
-  useQueueDrain: jest.fn(),
-  useQueuedTurnReveal: jest.fn(),
-}));
+jest.mock('@librechat/chat/react', () => {
+  const actual = jest.requireActual('@librechat/chat/react');
+  return {
+    ...actual,
+    ChatSessionProvider: ({
+      children,
+    }: {
+      children: (session: { messages: unknown[]; isLoading: boolean }) => React.ReactNode;
+    }) => (
+      <actual.ChatContext.Provider value={{ conversation: mockConversation }}>
+        {children({ messages: [{ messageId: 'message-1' }], isLoading: false })}
+      </actual.ChatContext.Provider>
+    ),
+  };
+});
 
 jest.mock('~/hooks', () => ({
   useAddedResponse: () => ({}),
@@ -46,11 +51,6 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/hooks/Chat/outcomes', () => ({
   getMappingOptions: () => ({}),
-}));
-
-jest.mock('~/hooks/SSE', () => ({
-  useAdaptiveSSE: jest.fn(),
-  useResumeOnLoad: jest.fn(),
 }));
 
 jest.mock('~/Providers', () => {
@@ -67,11 +67,6 @@ jest.mock('~/Providers', () => {
 
 jest.mock('~/data-provider', () => ({
   useProjectQuery: () => ({ data: undefined }),
-  useGetMessagesByConvoId: () => ({
-    data: [{ messageId: 'message-1' }],
-    isLoading: false,
-    isFetching: false,
-  }),
 }));
 
 jest.mock('../Input/ConversationStarters', () => () => null);

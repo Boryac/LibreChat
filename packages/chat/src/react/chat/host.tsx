@@ -140,6 +140,26 @@ export type ChatMessageCache = {
   refetchStreamStatus: (conversationId: string) => void;
 };
 
+/** A conversation's messages as the app's data layer loads them. */
+export type ChatMessagesQuery = {
+  messages: TMessage[] | null;
+  /** No data yet for this conversation. */
+  isLoading: boolean;
+  /** A load or background revalidation is in flight. */
+  isFetching: boolean;
+};
+
+/** What a pane's session hands its effects each render. */
+export type ChatSessionEffectsParams = {
+  index: number;
+  conversationId?: string;
+  chat: ChatContract;
+  /** The pane's root submission, the turn its stream serves. */
+  submission: TSubmission | null;
+  /** The messages finished loading and no revalidation is in flight. */
+  isSettled: boolean;
+};
+
 /**
  * What `useChatHelpers` needs from the app that hosts it. Members named `use*` are hooks, called
  * unconditionally by the chat hook, so the host can back each one with its own router, query
@@ -167,6 +187,19 @@ export interface ChatHost {
   useFeedbackEnabled(): boolean;
   /** The app's tool outcome rules for viewing one message; see {@link ChatContract}. */
   getMappingOptions(live: TAttachment[] | undefined): UIMappingOptions;
+  /** Loads a conversation's messages; `isStreaming` lets the query hold off refetching under a
+   *  live stream. An absent id loads nothing. */
+  useMessages(
+    conversationId: string | undefined,
+    options: { isStreaming: boolean },
+  ): ChatMessagesQuery;
+  /**
+   * Runs the pane's stream connection and its resume on load.
+   *
+   * @deprecated On arrival: a bridge to the app's SSE hooks until they move into this package,
+   * after which the session runs them itself and this member is removed.
+   */
+  useSessionEffects(params: ChatSessionEffectsParams): void;
 }
 
 const ChatHostContext = createContext<ChatHost | null>(null);
