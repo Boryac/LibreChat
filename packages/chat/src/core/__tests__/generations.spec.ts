@@ -3359,6 +3359,24 @@ describe('Chat pause lifecycle and its decision markers', () => {
     );
     expect(before).toBeGreaterThanOrEqual(0);
   });
+
+  it.each([
+    ['older than the restored one', { ...approval, responseMessageId: 'response-10' }],
+    ['that expired', { ...newer, responseMessageId: 'response-10', expiresAt: 1 }],
+  ])(
+    'a replayed pause %s does not rename the response a drop reports',
+    async (_label, replayed) => {
+      const h = createHarness({ messages: [userMessage, restoredResponse, laterMessage] });
+      h.chat.restorePendingAction({ ...newer, responseMessageId: 'response-9' }, 500);
+      const stream = await reattached(h);
+      stream.push({ type: 'pending_action', data: replayed } as unknown as ChatEvent);
+      await flush();
+      stream.push(dropEvent);
+      await flush();
+
+      expect(h.finishes[h.finishes.length - 1]?.message?.messageId).toBe('response-9');
+    },
+  );
 });
 
 /** Table 2: every path a lost start can take, and what a stop answers after it. */

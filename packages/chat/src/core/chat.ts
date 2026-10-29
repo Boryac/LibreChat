@@ -2146,9 +2146,7 @@ export class Chat {
       event.type === 'pending_action' &&
       this.generationCreatedAt != null &&
       this.isOlderPause(event.data, this.generationCreatedAt);
-    const stale =
-      event.type === 'pending_action' &&
-      (isExpired(event.data) || this.resumed.has(event.data.actionId) || older);
+    const stale = event.type === 'pending_action' && this.isStalePause(event.data);
     const folded = stale ? undefined : this.withoutStalePause(event);
     const disconnect =
       event.type === 'error' &&
@@ -2339,12 +2337,19 @@ export class Chat {
 
   /** Records the ids and pause an event reports for the request it arrived on. */
   private track(active: ActiveRequest, event: ChatEvent): void {
+    const identity = getFrameIdentity(event);
+    if (event.type === 'pending_action' && this.isStalePause(event.data)) {
+      /** A stale pause names neither the held pause nor the response its generation reports. */
+      this.adopt(active.generation, { ...identity, responseMessageId: undefined });
+      return;
+    }
+    const snapshot = event.type === 'sync' ? event.data.resumeState?.pendingAction : undefined;
     if (event.type === 'pending_action') {
       active.generation.paused = event.data.actionId;
-    } else if (event.type === 'sync' && event.data.resumeState?.pendingAction) {
-      active.generation.paused = event.data.resumeState.pendingAction.actionId;
+    } else if (snapshot && !this.isStalePause(snapshot)) {
+      active.generation.paused = snapshot.actionId;
     }
-    this.adopt(active.generation, getFrameIdentity(event));
+    this.adopt(active.generation, identity);
   }
 
   /**
@@ -2505,16 +2510,21 @@ export class Chat {
     if (event.type !== 'sync' || !snapshot) {
       return event;
     }
-    const generation = this.generationCreatedAt;
-    const stale =
-      isExpired(snapshot) ||
-      this.resumed.has(snapshot.actionId) ||
-      (generation != null && this.isOlderPause(snapshot, generation));
-    if (!stale) {
+    if (!this.isStalePause(snapshot)) {
       return event;
     }
     const resumeState = { ...event.data.resumeState, pendingAction: undefined };
     return { ...event, data: { ...event.data, resumeState } } as ChatEvent;
+  }
+
+  /** Whether `action` expired, was already resumed, or trails a pause seen in its generation. */
+  private isStalePause(action: Agents.PendingAction): boolean {
+    const generation = this.generationCreatedAt;
+    return (
+      isExpired(action) ||
+      this.resumed.has(action.actionId) ||
+      (generation != null && this.isOlderPause(action, generation))
+    );
   }
 
   /** Whether `action` came before a pause this chat already saw in the same generation. */
