@@ -96,3 +96,76 @@ it('never masks an authorization requirement with retained Connect success', () 
     )?.example.connectionState,
   ).toBe('disconnected');
 });
+
+describe('observed recovery after failed Connect', () => {
+  const statuses = {
+    example: {
+      requiresOAuth: false,
+      connectionState: 'connected' as const,
+      connectionStateSource: 'transport' as const,
+    },
+  };
+  const results = {
+    example: {
+      id: 'attempt',
+      configKey: getMCPConnectKey(server, 'owner'),
+      settledAt: 100,
+      state: 'error' as const,
+    },
+  };
+  it('lets a later observed connected transport supersede the failure', () => {
+    expect(
+      applyMCPConnectResults(statuses, results, { example: server }, 'owner', 101)?.example
+        .connectionState,
+    ).toBe('connected');
+  });
+  it.each([undefined, 99, 100])(
+    'retains failure against an older or unordered read (%s)',
+    (readStartedAt) => {
+      expect(
+        applyMCPConnectResults(statuses, results, { example: server }, 'owner', readStartedAt)
+          ?.example.connectionState,
+      ).toBe('error');
+    },
+  );
+  it('does not treat durable OAuth readiness as a new live transport', () => {
+    expect(
+      applyMCPConnectResults(
+        { example: { ...statuses.example, connectionStateSource: 'authorization' } },
+        results,
+        { example: server },
+        'owner',
+        101,
+      )?.example.connectionState,
+    ).toBe('error');
+  });
+});
+
+it.each(['error', 'connecting', 'disconnected'] as const)(
+  'only newer observed %s can supersede a successful Connect',
+  (state) => {
+    const results = {
+      example: {
+        id: 'attempt',
+        configKey: getMCPConnectKey(server, 'owner'),
+        settledAt: 100,
+        state: 'connected' as const,
+      },
+    };
+    const statuses = {
+      example: {
+        requiresOAuth: false,
+        connectionState: state,
+        connectionStateSource: 'transport' as const,
+      },
+    };
+    expect(
+      applyMCPConnectResults(statuses, results, { example: server }, 'owner', 99)?.example
+        .connectionState,
+    ).toBe('connected');
+    expect(
+      applyMCPConnectResults(statuses, results, { example: server }, 'owner', 101)?.example
+        .connectionState,
+    ).toBe(state);
+  },
+);

@@ -45,9 +45,9 @@ import {
   useAuthContext,
   useMCPConnectionStatus,
 } from '~/hooks';
+import { applyMCPConnectResults, getMCPConnectKey, reconcileMCPConnectResult } from './connection';
 import { mcpServerInitStatesAtom, mcpConnectResultsAtom, getServerInitState } from '~/store/mcp';
 import { useGetStartupConfig, useMCPServersQuery, useMCPToolsQuery } from '~/data-provider';
-import { applyMCPConnectResults, getMCPConnectKey } from './connection';
 import { getMCPReinitializeErrorMessage } from './errors';
 import { openInNewTab } from '~/utils';
 
@@ -244,14 +244,20 @@ export function useMCPServerManager({
   // Poll intervals are kept local (not serializable)
   const pollIntervalsRef = useRef<PollIntervals>({});
 
-  const { connectionStatus: polledConnectionStatus } = useMCPConnectionStatus({
+  const { connectionStatus: polledConnectionStatus, readStartedAt } = useMCPConnectionStatus({
     enabled: observeToolAuthorization && !isLoading && availableMCPServers.length > 0,
   });
   const connectionStatus = useMemo(() => {
     if (!polledConnectionStatus) {
       return applyPendingOAuthState(
         applyMCPDiscoveryAuthorizationState(
-          applyMCPConnectResults(polledConnectionStatus, connectResults, loadedServers, ownerKey),
+          applyMCPConnectResults(
+            polledConnectionStatus,
+            connectResults,
+            loadedServers,
+            ownerKey,
+            readStartedAt,
+          ),
           discoveredMCPTools,
         ),
         serverInitStates,
@@ -271,7 +277,13 @@ export function useMCPServerManager({
     const normalizedStatus = changed ? nextStatus : polledConnectionStatus;
     return applyPendingOAuthState(
       applyMCPDiscoveryAuthorizationState(
-        applyMCPConnectResults(normalizedStatus, connectResults, loadedServers, ownerKey),
+        applyMCPConnectResults(
+          normalizedStatus,
+          connectResults,
+          loadedServers,
+          ownerKey,
+          readStartedAt,
+        ),
         discoveredMCPTools,
       ),
       serverInitStates,
@@ -283,6 +295,7 @@ export function useMCPServerManager({
     serverInitStates,
     connectResults,
     ownerKey,
+    readStartedAt,
   ]);
 
   const updateServerInitState = useCallback(
@@ -300,7 +313,23 @@ export function useMCPServerManager({
 
   useEffect(() => {
     for (const [name, result] of Object.entries(connectResults)) {
-      if (result.configKey === getMCPConnectKey(loadedServers?.[name], ownerKey)) continue;
+      if (result.configKey === getMCPConnectKey(loadedServers?.[name], ownerKey)) {
+        const recovered = reconcileMCPConnectResult(
+          result,
+          polledConnectionStatus?.[name],
+          loadedServers?.[name],
+          ownerKey,
+          readStartedAt,
+        );
+        if (result.state === 'error' && recovered?.state === 'connected') {
+          setConnectResults((previous) =>
+            previous[name]?.id === result.id && previous[name]?.state === 'error'
+              ? { ...previous, [name]: recovered }
+              : previous,
+          );
+        }
+        continue;
+      }
       setConnectResults((previous) => {
         const next = { ...previous };
         delete next[name];
@@ -313,7 +342,15 @@ export function useMCPServerManager({
         isCancellable: false,
       });
     }
-  }, [loadedServers, ownerKey, connectResults, setConnectResults, updateServerInitState]);
+  }, [
+    loadedServers,
+    ownerKey,
+    connectResults,
+    setConnectResults,
+    updateServerInitState,
+    polledConnectionStatus,
+    readStartedAt,
+  ]);
 
   const cleanupServerState = useCallback(
     (serverName: string) => {
@@ -630,7 +667,14 @@ export function useMCPServerManager({
         }
         setConnectResults((previous) => ({
           ...previous,
-          [serverName]: { id, configKey, state, authorizationGeneration, configurationUpdatedAt },
+          [serverName]: {
+            id,
+            configKey,
+            state,
+            authorizationGeneration,
+            configurationUpdatedAt,
+            settledAt: performance.now(),
+          },
         }));
       };
       /** connectionDeferred is reset up front so a stale value from a previous

@@ -8,8 +8,8 @@ import type {
   MCPReinitializeResponse,
   MCPServerStatus,
 } from 'librechat-data-provider';
+import { resetMCPStateAtom, mcpConnectResultsAtom } from '~/store/mcp';
 import { useMCPServerManager } from '../useMCPServerManager';
-import { resetMCPStateAtom } from '~/store/mcp';
 
 let mockServers = {
   'test-server': {
@@ -42,7 +42,9 @@ const mockUseMCPToolsQuery = jest.fn((_options?: unknown): { data?: MCPServersRe
   data: undefined,
 }));
 const mockUseMCPConnectionStatus = jest.fn(
-  (_options?: unknown): { connectionStatus: Record<string, MCPServerStatus> } => ({
+  (
+    _options?: unknown,
+  ): { connectionStatus: Record<string, MCPServerStatus>; readStartedAt?: number } => ({
     connectionStatus: {},
   }),
 );
@@ -391,6 +393,56 @@ describe('replica-independent Connect results', () => {
     }
   });
 
+  it('clears a retained failure on fresh transport recovery and keeps it through a later cold poll', async () => {
+    mockReinitialize.mockResolvedValueOnce({ ...success, success: false });
+    const hook = setup();
+    try {
+      await act(async () => {
+        await hook.result.current.initializeServer(name);
+      });
+      const readStartedAt =
+        (hook.session.get(mcpConnectResultsAtom)[name].settledAt ?? Date.now()) + 1;
+      mockUseMCPConnectionStatus.mockReturnValue({
+        connectionStatus: {
+          [name]: { ...cold, connectionState: 'connected', connectionStateSource: 'transport' },
+        },
+        readStartedAt,
+      });
+      hook.rerender();
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('connected');
+      mockUseMCPConnectionStatus.mockReturnValue({
+        connectionStatus: { [name]: cold },
+        readStartedAt: readStartedAt + 1,
+      });
+      hook.rerender();
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('connected');
+    } finally {
+      hook.cleanup();
+    }
+  });
+
+  it('retains failed Connect against an older connected status read', async () => {
+    mockReinitialize.mockResolvedValueOnce({ ...success, success: false });
+    const hook = setup();
+    try {
+      await act(async () => {
+        await hook.result.current.initializeServer(name);
+      });
+      const readStartedAt =
+        (hook.session.get(mcpConnectResultsAtom)[name].settledAt ?? Date.now()) - 1;
+      mockUseMCPConnectionStatus.mockReturnValue({
+        connectionStatus: {
+          [name]: { ...cold, connectionState: 'connected', connectionStateSource: 'transport' },
+        },
+        readStartedAt,
+      });
+      hook.rerender();
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('error');
+    } finally {
+      hook.cleanup();
+    }
+  });
+
   it('keeps a recovered outcome at its used revision and rejects a later edit', async () => {
     const original = mockServers;
     mockServers = { [name]: { ...original[name], updatedAt: 100 } };
@@ -446,6 +498,8 @@ describe('replica-independent Connect results', () => {
         await hook.result.current.initializeServer(name);
       });
       mockUseMCPConnectionStatus.mockReturnValue({
+        readStartedAt:
+          (hook.session.get(mcpConnectResultsAtom)[name].settledAt ?? performance.now()) + 1,
         connectionStatus: {
           [name]: {
             ...cold,
