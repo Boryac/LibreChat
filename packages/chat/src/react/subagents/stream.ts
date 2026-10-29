@@ -34,7 +34,8 @@ const readyReaders = new Map<string, number>();
 const INITIAL_RECONNECT_MS = 500;
 const MAX_RECONNECT_MS = 5_000;
 /** Reconnects in a row that deliver no live update before the feed gives up; the durable
- *  thread query keeps polling, so the panel still converges on the stored transcript. */
+ *  thread query keeps polling, so the panel still converges on the stored transcript.
+ *  Internal retry hygiene with that fallback, not an operator lever, so not in configSchema. */
 const MAX_IDLE_RECONNECTS = 8;
 
 /** A refusal no retry can clear: the task is gone or not the viewer's. 401 arrives here only
