@@ -3278,10 +3278,9 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(require('@librechat/api').getUserMCPAuthMap).toHaveBeenCalledWith({
+      expect(require('~/models').findPluginAuthsByKeys).toHaveBeenCalledWith({
         userId: 'test-user-id',
-        servers: ['test-server'],
-        findPluginAuthsByKeys: require('~/models').findPluginAuthsByKeys,
+        pluginKeys: [`${require('librechat-data-provider').Constants.mcp_prefix}test-server`],
       });
     });
   });

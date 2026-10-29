@@ -46,15 +46,13 @@ export default function MCPStatusBadge({
     'bg-status-neutral': 'bg-status-neutral-subtle text-status-neutral',
   };
   const pending = isInitializing || serverStatus?.connectionState === 'connecting';
-  const Icon = pending
-    ? Spinner
-    : color === 'bg-status-warning'
-      ? KeyRound
-      : color === 'bg-status-success'
-        ? Check
-        : color === 'bg-status-info'
-          ? Zap
-          : null;
+  const icons: Record<string, typeof Check> = {
+    'bg-status-warning': KeyRound,
+    'bg-status-success': Check,
+    'bg-status-info': Zap,
+  };
+  const Icon = pending ? Spinner : icons[color];
+
   return (
     <div role="status" aria-live="polite" className={cn(badgeBaseClass, variants[color])}>
       {Icon && <Icon className="size-3" aria-hidden="true" />}

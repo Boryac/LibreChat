@@ -1,12 +1,9 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
-import type { ConnectionState, ParsedServerConfig } from './types';
+import type { MCPConnection } from './connection';
+import type { ParsedServerConfig } from './types';
 import { requiresEphemeralUserConnection, hasRuntimeUrlPlaceholders } from './utils';
 
-export interface StatusConnection {
-  isStale: (updatedAt: ParsedServerConfig['updatedAt']) => boolean;
-  connectionState?: ConnectionState;
-  usesOAuth?: () => boolean;
-}
+export type StatusConnection = Pick<MCPConnection, 'isStale' | 'getConnectionState' | 'usesOAuth'>;
 
 export interface MCPStatusDependencies {
   getConfigurationState: (
@@ -36,7 +33,7 @@ export async function resolveMCPConnectionStatus(
   dependencies: MCPStatusDependencies,
 ): Promise<MCPServerStatus> {
   const connection = appConnections.get(serverName) || userConnections.get(serverName);
-  const isStaleOrDoNotExist = connection ? connection?.isStale(config.updatedAt) : true;
+  const isStaleOrDoNotExist = connection ? connection.isStale(config.updatedAt ?? 0) : true;
   const configuredOAuth = oauthServers.has(serverName);
   const liveConnectionOAuth = connection?.usesOAuth?.() === true;
   const runtimeOAuthCandidate =
@@ -47,7 +44,7 @@ export async function resolveMCPConnectionStatus(
 
   const baseConnectionState = isStaleOrDoNotExist
     ? 'disconnected'
-    : connection?.connectionState || 'disconnected';
+    : connection?.getConnectionState() || 'disconnected';
   let finalConnectionState = baseConnectionState;
   let connectionStateSource: MCPServerStatus['connectionStateSource'] =
     baseConnectionState === 'disconnected' ? 'unobserved' : 'transport';

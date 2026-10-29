@@ -14,9 +14,12 @@ const dependencies: MCPStatusDependencies = {
   getOAuthFlowStatus: async () => ({ hasActiveFlow: false, hasFailedFlow: false }),
   hasAuthorization: async () => false,
 };
-const connection = (connectionState: StatusConnection['connectionState']): StatusConnection => ({
+const connection = (
+  connectionState: ReturnType<StatusConnection['getConnectionState']>,
+): StatusConnection => ({
   isStale: () => false,
-  connectionState,
+  usesOAuth: () => false,
+  getConnectionState: () => connectionState,
 });
 const resolve = (connections: Map<string, StatusConnection>, deps = dependencies, oauth = false) =>
   resolveMCPConnectionStatus(

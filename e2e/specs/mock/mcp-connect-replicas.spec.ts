@@ -12,6 +12,7 @@ test('Connect survives cold-replica status; tools survive the connecting replica
   page,
   baseURL,
 }, info) => {
+  test.skip(process.env.E2E_MCP_CONNECTION_STATUS !== 'true' || process.env.E2E_REPLICAS !== '2');
   test.setTimeout(180000);
   await page.addInitScript(
     (theme) => localStorage.setItem('color-theme', theme),
