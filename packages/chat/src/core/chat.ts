@@ -281,6 +281,11 @@ type ActiveRequest = {
    * own, so no answer about another start or conversation resolves it if it is lost.
    */
   sentUnder?: string;
+  /**
+   * Set once the server answered for the start after it was cancelled, which can happen before the
+   * request settles, so a settle that follows owes nothing for it.
+   */
+  resolved?: boolean;
   /** Resolves once the request settled and released the chat. */
   finished: Promise<void>;
   finish: () => void;
@@ -831,6 +836,8 @@ export class Chat {
    * oldest first. Each stays the caller's to stop until an answer resolves that start itself.
    */
   private readonly lostStarts = new Set<ActiveRequest>();
+  /** The newest start handed to the transport, whose conversation a late answer must not replace. */
+  private latestStart?: ActiveRequest;
   private readonly decisions = new Map<string, Agents.ToolApprovalResolution>();
   /** Pauses already resumed, whose replay by a reattached stream is stale. */
   private readonly resumed = new Set<string>();
@@ -1152,7 +1159,8 @@ export class Chat {
        * A start already handed to the transport may be running on the server with no frame naming
        * it; a late stream is stopped by `dropLateStart`, but one that never arrives is the caller's.
        */
-      const own: ChatStopResult = active.sent ? unaddressable : { status: 'stopped' };
+      const own: ChatStopResult =
+        active.sent && !active.resolved ? unaddressable : { status: 'stopped' };
       if (detached && this.detached === detached) {
         /**
          * The cancelled retry never took over the dropped generation, which this stop also ends,
@@ -1202,15 +1210,20 @@ export class Chat {
     if (generation.stopping) {
       return generation.stopping;
     }
+    const since = this.latestStart;
     const answer = this.abortOnServer(target).then((result) => {
       generation.stopped = true;
+      /** A start sent while the stop waited may run in a conversation of its own, which wins. */
+      const adopts = !this.startsAfter(since);
       if (target.generationCreatedAt != null) {
         this.endedGenerations.add(target.generationCreatedAt);
       }
       if (isStreamAbort(result)) {
         generation.stoppedConversationId = this.stoppedConversationId(generation, result);
-        this.learnConversation(generation.stoppedConversationId);
-      } else if (result) {
+        if (adopts) {
+          this.learnConversation(generation.stoppedConversationId);
+        }
+      } else if (result && adopts) {
         this.learnConversation(result.conversation?.conversationId);
       }
       generation.settledAs = getSettledAs(result);
@@ -1298,7 +1311,9 @@ export class Chat {
        * request does not own and leaves alone; either way its stop has nothing left to reach, and
        * the answer names the conversation a chat started under `new` adopts.
        */
-      this.learnConversation(sent.conversationId);
+      if (!this.startsAfter(active)) {
+        this.learnConversation(sent.conversationId);
+      }
       this.resolveLostStart(active);
       return;
     }
@@ -1346,6 +1361,18 @@ export class Chat {
     return newest;
   }
 
+  /**
+   * Whether a start sent after `since` is still running or lost, so it may own a conversation of
+   * its own that a late answer about an older generation must not replace.
+   */
+  private startsAfter(since: ActiveRequest | undefined): boolean {
+    const latest = this.latestStart;
+    if (!latest || latest === since) {
+      return false;
+    }
+    return latest === this.active || this.lostStarts.has(latest);
+  }
+
   /** Whether any start is still lost, which only the host's own abort can reach. */
   private get unaddressed(): boolean {
     return this.lostStarts.size > 0;
@@ -1366,16 +1393,20 @@ export class Chat {
 
   /**
    * A start the chat reported lost is now answered for: its marker clears, a newer lost start keeps
-   * its own, and the failure it reported resolves unless a newer turn owns the chat.
+   * its own, and the failure it reported gives way to the newest start still lost, or resolves,
+   * unless a newer turn owns the chat.
    */
   private resolveLostStart(active: ActiveRequest): void {
+    active.resolved = true;
     this.lostStarts.delete(active);
     const failed = active.disconnected;
-    if (!this.disposed && !this.active && failed && this.error === failed) {
-      this.init.state.error = undefined;
-      this.init.state.status = 'ready';
-      this.notify();
+    if (this.disposed || this.active || !failed || this.error !== failed) {
+      return;
     }
+    const owed = this.newestLostStart()?.disconnected;
+    this.init.state.error = owed;
+    this.init.state.status = owed ? 'error' : 'ready';
+    this.notify();
   }
 
   /**
@@ -1878,6 +1909,7 @@ export class Chat {
       const { signal } = active.controller;
       active.sent = true;
       active.sentUnder = this.conversation;
+      this.latestStart = active;
       const result = await openUntilAborted(
         this.init.transport.sendMessages({
           ...options,
@@ -2212,7 +2244,13 @@ export class Chat {
   }
 
   private toOutcome(error: unknown, active: ActiveRequest): Outcome {
-    if (active.controller.signal.aborted && active.sent && !active.stream && !active.reattach) {
+    if (
+      active.controller.signal.aborted &&
+      active.sent &&
+      !active.resolved &&
+      !active.stream &&
+      !active.reattach
+    ) {
       /** A start cancelled before its answer may still run on the server, so its end is unknown. */
       return {
         kind: 'error',
@@ -2260,7 +2298,7 @@ export class Chat {
           },
           generation: active.generation,
         };
-      } else if (active.sent && !active.generation.stopped) {
+      } else if (active.sent && !active.generation.stopped && !active.resolved) {
         /** The start may have reached the server, which answered nothing this chat can address. */
         this.lostStarts.add(active);
       }
