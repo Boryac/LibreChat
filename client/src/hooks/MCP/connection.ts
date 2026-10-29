@@ -5,7 +5,17 @@ export function getMCPConnectKey(
   server: MCPServersListResponse[string] | undefined,
   owner: string,
 ): string {
-  return JSON.stringify([owner, server]);
+  if (!server) return JSON.stringify([owner]);
+  // Discovery can change these without changing the server configuration.
+  const {
+    tools: _tools,
+    toolFunctions: _toolFunctions,
+    initDuration: _initDuration,
+    capabilities: _capabilities,
+    inspectionFailed: _inspectionFailed,
+    ...configuration
+  } = server;
+  return JSON.stringify([owner, configuration]);
 }
 
 /** A local check result cannot be undone by another replica having no transport. */

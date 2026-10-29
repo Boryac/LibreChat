@@ -17,11 +17,19 @@ describe('client timeouts', () => {
     expect(getClientLimit('ttsMs')).toBe(DEFAULT_CLIENT_LIMITS.ttsMs);
   });
 
-  it('bounds MCP Connect by default and accepts an operator override', () => {
-    expect(getClientLimit('mcpConnectMs')).toBe(120_000);
+  it('preserves unlimited MCP Connect by default and accepts an operator deadline', () => {
+    expect(getClientLimit('mcpConnectMs')).toBe(0);
     setClientLimits({ mcpConnectMs: 15_000 });
     expect(getClientLimit('mcpConnectMs')).toBe(15_000);
     expect(configSchema.shape.clientLimits.safeParse({ mcpConnectMs: 15_000 }).success).toBe(true);
+    setClientLimits({ mcpConnectMs: 0 });
+    expect(getClientLimit('mcpConnectMs')).toBe(0);
+    expect(configSchema.shape.clientLimits.safeParse({ mcpConnectMs: 0 }).success).toBe(true);
+    for (const value of [-1, 1.5, 3_600_001]) {
+      expect(configSchema.shape.clientLimits.safeParse({ mcpConnectMs: value }).success).toBe(
+        false,
+      );
+    }
   });
 
   it('defaults upload concurrency to three and accepts an override', () => {
