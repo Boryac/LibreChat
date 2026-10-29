@@ -9,11 +9,10 @@ import type { AuthIdentityContext } from '~/utils/identity';
 import type { UpstreamTokenProvider } from './oauth/obo';
 import type { ParsedServerConfig } from './types';
 import { MCPAuthenticationRejectedError, MCPAuthenticationRefreshError } from './errors';
+import { resolveMCPReinitializeConfig } from './reinitialize';
 import { createAuthIdentityContext } from '~/utils/identity';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
-import { mcpConfig as mcpSettings } from './mcpConfig';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { MCPOAuthHandler } from './oauth/handler';
 import { setOAuthCsrfCookie } from '~/oauth/csrf';
 import { createSafeUser } from '~/utils/env';
 import { getUserMCPAuthMap } from './auth';
@@ -25,10 +24,12 @@ type ReinitializeRequest = Request<{ serverName: string }> & {
 };
 
 export interface MCPReinitializeDependencies {
+  oauthHandlingTimeout: number;
+  getOAuthFlowId: (userId: string, serverName: string) => string;
   getMCPManager: () => {
     disconnectUserConnection: (userId: string, serverName: string) => Promise<void>;
   };
-  getMCPServersRegistry: () => Pick<MCPServersRegistry, 'getServerConfig'>;
+  getMCPServersRegistry: () => Pick<MCPServersRegistry, 'getServerConfig' | 'recoverServerConfig'>;
   resolveConfigServers: (
     req: ReinitializeRequest,
   ) => Promise<Record<string, ParsedServerConfig> | undefined>;
@@ -60,9 +61,9 @@ export interface MCPReinitializeDependencies {
   }) => Promise<(MCPReinitializeResponse & { oauthExpiresAt?: number }) | undefined>;
 }
 
-function getMCPReinitializeOAuthTimeout(oauthExpiresAt?: number) {
+function getMCPReinitializeOAuthTimeout(defaultTimeout: number, oauthExpiresAt?: number) {
   if (typeof oauthExpiresAt !== 'number' || !Number.isFinite(oauthExpiresAt)) {
-    return mcpSettings.OAUTH_HANDLING_TIMEOUT;
+    return defaultTimeout;
   }
   return Math.max(0, oauthExpiresAt - Date.now());
 }
@@ -70,6 +71,8 @@ function getMCPReinitializeOAuthTimeout(oauthExpiresAt?: number) {
 /** Keep the request's result independent of other replicas' local transport maps. */
 export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies): RequestHandler {
   const {
+    oauthHandlingTimeout,
+    getOAuthFlowId,
     getMCPManager,
     getMCPServersRegistry,
     resolveConfigServers,
@@ -79,8 +82,6 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
     createOpenIDSessionTokenProvider,
     reinitMCPServer,
   } = deps;
-  const getOAuthFlowId = (userId: string, serverName: string) =>
-    MCPOAuthHandler.generateFlowId(userId, serverName, getTenantId());
   const OAUTH_CSRF_COOKIE_PATH = '/api/mcp';
   return async (request, res, next) => {
     const req = request as ReinitializeRequest;
@@ -97,7 +98,8 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
 
       const mcpManager = getMCPManager();
       const configServers = await resolveConfigServers(req);
-      const serverConfig = await getMCPServersRegistry().getServerConfig(
+      const registry = getMCPServersRegistry();
+      let serverConfig = await registry.getServerConfig(
         serverName,
         user.id,
         configServers,
@@ -121,6 +123,14 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
         `[MCP Reinitialize] Disconnected existing user connection for server: ${serverName}`,
       );
 
+      const resolution = await resolveMCPReinitializeConfig(
+        registry,
+        serverName,
+        serverConfig,
+        user.id,
+      );
+      serverConfig = resolution.serverConfig ?? serverConfig;
+
       /** @type {Record<string, Record<string, string>> | undefined} */
       let userMCPAuthMap: Record<string, Record<string, string>> | undefined;
       if (serverConfig.customUserVars && typeof serverConfig.customUserVars === 'object') {
@@ -138,36 +148,39 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
       const controller = new AbortController();
       const abort = () => controller.abort();
       res.once('close', abort);
-      let result;
+      let result: Awaited<ReturnType<MCPReinitializeDependencies['reinitMCPServer']>> =
+        resolution.result;
       try {
-        result = await reinitMCPServer({
-          signal: controller.signal,
-          forceNew: true,
-          user,
-          serverName,
-          serverConfig,
-          configServers,
-          userMCPAuthMap,
-          upstreamTokenProvider: createOpenIDSessionTokenProvider({
-            req,
-            res,
-            user: req.user,
-            identityContext: oboIdentityContext,
-            tokenPreference: 'access_token',
-          }),
-          oboIdentityContext,
-          recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
-          mcpApps: resolveMCPAppsPolicy(
-            req.config?.mcpSettings?.apps,
-            undefined,
-            req.config?.mcpAppSandbox?.maxPersistedAppBytes,
-            req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
-            req.config?.mcpAppSandbox?.url,
-            req.config?.mcpAppSandbox?.maxActiveViews,
-            req.config?.mcpAppSandbox?.maxActionPreviewChars,
-            req.config?.mcpAppSandbox?.operationLimits,
-          ),
-        });
+        if (!result) {
+          result = await reinitMCPServer({
+            signal: controller.signal,
+            forceNew: true,
+            user,
+            serverName,
+            serverConfig,
+            configServers,
+            userMCPAuthMap,
+            upstreamTokenProvider: createOpenIDSessionTokenProvider({
+              req,
+              res,
+              user: req.user,
+              identityContext: oboIdentityContext,
+              tokenPreference: 'access_token',
+            }),
+            oboIdentityContext,
+            recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
+            mcpApps: resolveMCPAppsPolicy(
+              req.config?.mcpSettings?.apps,
+              undefined,
+              req.config?.mcpAppSandbox?.maxPersistedAppBytes,
+              req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+              req.config?.mcpAppSandbox?.url,
+              req.config?.mcpAppSandbox?.maxActiveViews,
+              req.config?.mcpAppSandbox?.maxActionPreviewChars,
+              req.config?.mcpAppSandbox?.operationLimits,
+            ),
+          });
+        }
       } finally {
         res.off('close', abort);
       }
@@ -197,11 +210,14 @@ export function createMCPReinitializeHandler(deps: MCPReinitializeDependencies):
 
       res.json({
         authorizationGeneration,
+        configurationUpdatedAt: serverConfig.updatedAt,
         success,
         message,
         oauthUrl,
         flowId,
-        oauthTimeout: oauthRequired ? getMCPReinitializeOAuthTimeout(oauthExpiresAt) : undefined,
+        oauthTimeout: oauthRequired
+          ? getMCPReinitializeOAuthTimeout(oauthHandlingTimeout, oauthExpiresAt)
+          : undefined,
         serverName,
         oauthRequired,
         failureReason,

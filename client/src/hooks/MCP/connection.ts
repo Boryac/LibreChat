@@ -7,6 +7,7 @@ const discoveryFields = new Set([
   'initDuration',
   'capabilities',
   'inspectionFailed',
+  'updatedAt',
 ]);
 
 export function getMCPConnectKey(
@@ -36,6 +37,13 @@ export function applyMCPConnectResults(
       continue;
     }
     const current = statuses?.[name];
+    if (
+      result.state !== 'connecting' &&
+      result.configurationUpdatedAt != null &&
+      servers?.[name]?.updatedAt != null &&
+      result.configurationUpdatedAt !== servers[name].updatedAt
+    )
+      continue;
     if (
       current?.configurationState === 'needs_configuration' ||
       (result.authorizationGeneration != null &&

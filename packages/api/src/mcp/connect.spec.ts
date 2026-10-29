@@ -13,8 +13,11 @@ function setup() {
   const invalidate = jest.fn().mockResolvedValue('connect-generation');
   const disconnect = jest.fn().mockResolvedValue(undefined);
   const dependencies: MCPReinitializeDependencies = {
+    oauthHandlingTimeout: 12345,
+    getOAuthFlowId: (userId, serverName) => `injected-${userId}-${serverName}`,
     getMCPManager: () => ({ disconnectUserConnection: disconnect }),
     getMCPServersRegistry: () => ({
+      recoverServerConfig: jest.fn(),
       getServerConfig: jest.fn().mockResolvedValue({
         type: 'streamable-http',
         url: 'https://mcp.example.test',
@@ -37,15 +40,16 @@ function setup() {
   return { app, dependencies, reinitialize, invalidate, disconnect };
 }
 
+const originalSecret = process.env.JWT_SECRET;
+beforeAll(() => {
+  process.env.JWT_SECRET = 'synthetic-test-secret';
+});
+afterAll(() => {
+  if (originalSecret == null) delete process.env.JWT_SECRET;
+  else process.env.JWT_SECRET = originalSecret;
+});
+
 describe('Connect response ownership', () => {
-  const originalSecret = process.env.JWT_SECRET;
-  beforeAll(() => {
-    process.env.JWT_SECRET = 'synthetic-test-secret';
-  });
-  afterAll(() => {
-    if (originalSecret == null) delete process.env.JWT_SECRET;
-    else process.env.JWT_SECRET = originalSecret;
-  });
   it('returns the operation outcome and invalidated generation without another shared write', async () => {
     const fixture = setup();
     const response = await request(fixture.app).post('/server/reinitialize').expect(200);
@@ -86,7 +90,7 @@ describe('Connect response ownership', () => {
       oauthRequired: true,
       oauthUrl: 'https://auth.example.test',
     });
-    expect(response.body.flowId).toContain('server');
+    expect(response.body.flowId).toBe('injected-user-server');
     expect(response.body.oauthTimeout).toBeGreaterThan(0);
     expect(response.headers['set-cookie']).toBeDefined();
   });
@@ -96,4 +100,42 @@ describe('Connect response ownership', () => {
     const response = await request(fixture.app).post('/server/reinitialize').expect(500);
     expect(response.body).toEqual({ error: 'Internal server error' });
   });
+});
+
+it('uses the injected OAuth timeout independently for each handler', async () => {
+  const fixture = setup();
+  fixture.reinitialize.mockResolvedValue({
+    success: true,
+    serverName: 'server',
+    oauthRequired: true,
+    oauthUrl: 'https://auth.example.test',
+  });
+  const response = await request(fixture.app).post('/server/reinitialize').expect(200);
+  expect(response.body.oauthTimeout).toBe(12345);
+});
+
+it('reports the recovered configuration revision actually used by Connect', async () => {
+  const fixture = setup();
+  const stub = {
+    type: 'streamable-http' as const,
+    url: 'https://mcp.example.test',
+    updatedAt: 100,
+    inspectionFailed: true,
+  };
+  const recovered = { ...stub, updatedAt: 200, inspectionFailed: false };
+  fixture.dependencies.getMCPServersRegistry = () => ({
+    getServerConfig: jest.fn().mockResolvedValue(stub),
+    recoverServerConfig: jest.fn().mockResolvedValue(recovered),
+  });
+  const app = express();
+  app.use((req, _res, next) => {
+    Object.assign(req, { user: { id: 'user', role: 'USER' } });
+    next();
+  });
+  app.post('/:serverName/reinitialize', createMCPReinitializeHandler(fixture.dependencies));
+  const response = await request(app).post('/server/reinitialize').expect(200);
+  expect(response.body.configurationUpdatedAt).toBe(200);
+  expect(fixture.reinitialize).toHaveBeenCalledWith(
+    expect.objectContaining({ serverConfig: recovered }),
+  );
 });

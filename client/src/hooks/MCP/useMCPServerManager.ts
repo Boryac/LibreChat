@@ -342,16 +342,25 @@ export function useMCPServerManager({
 
   const startServerPolling = useCallback(
     (serverName: string, flowId?: string, initialOAuthTimeout?: number, connectId?: string) => {
-      const isCurrent = () =>
-        connectId == null || sessionStore.get(mcpConnectResultsAtom)[serverName]?.id === connectId;
-      // Prevent duplicate polling for the same server
-      if (pollIntervalsRef.current[serverName]) {
-        console.debug(`[MCP Manager] Polling already active for ${serverName}, skipping duplicate`);
-        return;
-      }
-
+      const previous = pollIntervalsRef.current[serverName];
+      if (previous) clearTimeout(previous);
+      pollIntervalsRef.current[serverName] = null;
       let pollAttempts = 0;
       let timeoutId: NodeJS.Timeout | null = null;
+      const releaseLocalPoll = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (pollIntervalsRef.current[serverName] === timeoutId) {
+          pollIntervalsRef.current[serverName] = null;
+        }
+        timeoutId = null;
+      };
+      const isCurrent = () => {
+        const current =
+          connectId == null ||
+          sessionStore.get(mcpConnectResultsAtom)[serverName]?.id === connectId;
+        if (!current) releaseLocalPoll();
+        return current;
+      };
       const pollingStartedAt = Date.now();
 
       /** OAuth can take several minutes if the user steps away from the consent screen.
@@ -577,19 +586,26 @@ export function useMCPServerManager({
   const initializeServer = useCallback(
     async (serverName: string, autoOpenOAuth: boolean = true) => {
       const id = uuidv4();
-      const configKey = getMCPConnectKey(
-        contextRef.current.servers?.[serverName],
-        contextRef.current.owner,
-      );
+      const initialServer = contextRef.current.servers?.[serverName];
+      const configKey = getMCPConnectKey(initialServer, contextRef.current.owner);
       const isCurrent = () =>
         sessionStore.get(mcpConnectResultsAtom)[serverName]?.id === id &&
         getMCPConnectKey(contextRef.current.servers?.[serverName], contextRef.current.owner) ===
           configKey;
       setConnectResults((previous) => ({
         ...previous,
-        [serverName]: { id, configKey, state: 'connecting' },
+        [serverName]: {
+          id,
+          configKey,
+          configurationUpdatedAt: initialServer?.updatedAt,
+          state: 'connecting',
+        },
       }));
-      const settle = async (state: 'connected' | 'error', authorizationGeneration?: string) => {
+      const settle = async (
+        state: 'connected' | 'error',
+        authorizationGeneration?: string,
+        configurationUpdatedAt = initialServer?.updatedAt,
+      ) => {
         await queryClient.cancelQueries([QueryKeys.mcpConnectionStatus]);
         if (!isCurrent()) return;
         // Discard reads started during Connect before installing its generation. A later read
@@ -614,7 +630,7 @@ export function useMCPServerManager({
         }
         setConnectResults((previous) => ({
           ...previous,
-          [serverName]: { id, configKey, state, authorizationGeneration },
+          [serverName]: { id, configKey, state, authorizationGeneration, configurationUpdatedAt },
         }));
       };
       /** connectionDeferred is reset up front so a stale value from a previous
@@ -623,6 +639,16 @@ export function useMCPServerManager({
       try {
         const response = await reinitializeServer(serverName);
         if (!isCurrent()) return response;
+        const currentRevision = contextRef.current.servers?.[serverName]?.updatedAt;
+        const usedRevision = response.configurationUpdatedAt ?? initialServer?.updatedAt;
+        if (
+          currentRevision != null &&
+          currentRevision !== initialServer?.updatedAt &&
+          currentRevision !== usedRevision
+        ) {
+          cleanupServerState(serverName);
+          return response;
+        }
         /** Record whether this attempt deferred to a chat turn (request-scoped
          * server) so consumers that didn't await this call (e.g. the agent
          * builder behind the customUserVars config dialog) can react to it. */
@@ -630,7 +656,7 @@ export function useMCPServerManager({
           connectionDeferred: Boolean(response.connectionDeferred),
         });
         if (!response.success || (response.oauthRequired && !response.oauthUrl)) {
-          await settle('error', response.authorizationGeneration);
+          await settle('error', response.authorizationGeneration, response.configurationUpdatedAt);
           if (!isCurrent()) return response;
           showToast({
             message: getMCPReinitializeErrorMessage(response, localize),
@@ -661,7 +687,11 @@ export function useMCPServerManager({
               return next;
             });
           } else {
-            await settle('connected', response.authorizationGeneration);
+            await settle(
+              'connected',
+              response.authorizationGeneration,
+              response.configurationUpdatedAt,
+            );
             if (!isCurrent()) return response;
           }
           cleanupServerState(serverName);
@@ -710,13 +740,12 @@ export function useMCPServerManager({
 
   const cancelOAuthFlow = useCallback(
     (serverName: string) => {
-      setConnectResults((previous) => {
-        const next = { ...previous };
-        delete next[serverName];
-        return next;
-      });
+      const cancelledId = sessionStore.get(mcpConnectResultsAtom)[serverName]?.id;
+      const isCurrent = () =>
+        sessionStore.get(mcpConnectResultsAtom)[serverName]?.id === cancelledId;
       cancelMCPOAuth(serverName, {
         onSuccess: () => {
+          if (!isCurrent()) return;
           cleanupServerState(serverName);
           Promise.all([
             queryClient.invalidateQueries([QueryKeys.mcpServers]),
@@ -731,6 +760,7 @@ export function useMCPServerManager({
           });
         },
         onError: (error) => {
+          if (!isCurrent()) return;
           console.error(`[MCP Manager] Failed to cancel OAuth for ${serverName}:`, error);
           showToast({
             message: localize('com_ui_mcp_init_failed', { 0: serverName }),
@@ -739,7 +769,7 @@ export function useMCPServerManager({
         },
       });
     },
-    [queryClient, cleanupServerState, showToast, localize, cancelMCPOAuth, setConnectResults],
+    [queryClient, cleanupServerState, showToast, localize, cancelMCPOAuth, sessionStore],
   );
 
   const isInitializing = useCallback(

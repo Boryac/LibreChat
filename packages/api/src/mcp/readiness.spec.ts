@@ -44,12 +44,15 @@ describe('MCP status observations', () => {
       authorizationState: 'not_required',
     });
   });
-  it.each(['error', 'connecting'] as const)('keeps an explicit %s observable', async (state) => {
-    expect(await resolve(new Map([['server', connection(state)]]))).toMatchObject({
-      connectionState: state,
-      connectionStateSource: 'transport',
-    });
-  });
+  it.each(['error', 'connecting', 'disconnected'] as const)(
+    'keeps an explicit %s observable',
+    async (state) => {
+      expect(await resolve(new Map([['server', connection(state)]]))).toMatchObject({
+        connectionState: state,
+        connectionStateSource: 'transport',
+      });
+    },
+  );
   it('evaluates required variables for ordinary servers as well as request-scoped servers', async () => {
     expect(
       await resolve(new Map(), {
@@ -86,4 +89,10 @@ describe('MCP status observations', () => {
       connectionStateSource: 'authorization',
     });
   });
+});
+
+it('keeps a stale loaded client unobserved', async () => {
+  expect(
+    await resolve(new Map([['server', { ...connection('connected'), isStale: () => true }]])),
+  ).toMatchObject({ connectionState: 'disconnected', connectionStateSource: 'unobserved' });
 });

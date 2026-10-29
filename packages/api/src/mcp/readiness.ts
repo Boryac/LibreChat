@@ -46,8 +46,9 @@ export async function resolveMCPConnectionStatus(
     ? 'disconnected'
     : connection?.getConnectionState() || 'disconnected';
   let finalConnectionState = baseConnectionState;
-  let connectionStateSource: MCPServerStatus['connectionStateSource'] =
-    baseConnectionState === 'disconnected' ? 'unobserved' : 'transport';
+  let connectionStateSource: MCPServerStatus['connectionStateSource'] = isStaleOrDoNotExist
+    ? 'unobserved'
+    : 'transport';
   let requiresOAuth = effectiveOAuth;
   let authorizationState: MCPServerStatus['authorizationState'] = effectiveOAuth
     ? 'needs_authorization'

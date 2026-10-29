@@ -915,6 +915,9 @@ router.post(
   checkMCPUsePermissions,
   setOAuthSession,
   createMCPReinitializeHandler({
+    oauthHandlingTimeout: mcpSettings.OAUTH_HANDLING_TIMEOUT,
+    getOAuthFlowId: (userId, serverName) =>
+      MCPOAuthHandler.generateFlowId(userId, serverName, getTenantId()),
     getMCPManager,
     getMCPServersRegistry,
     resolveConfigServers,

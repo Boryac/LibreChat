@@ -35,7 +35,34 @@ it('retains a Connect outcome when only discovered metadata changes', () => {
 it('invalidates a result when configuration or its owner changes', () => {
   const key = getMCPConnectKey(server, 'owner');
   expect(getMCPConnectKey({ ...server, url: 'https://changed.test' }, 'owner')).not.toBe(key);
-  const updatedServer = { ...server, updatedAt: 123 };
-  expect(getMCPConnectKey(updatedServer, 'owner')).not.toBe(key);
   expect(getMCPConnectKey(server, 'other-owner')).not.toBe(key);
+});
+
+it('binds recovered Connect to the used revision and rejects later configuration edits', () => {
+  const initial = { ...server, updatedAt: 100 };
+  const recovered = { ...server, updatedAt: 200 };
+  const statuses = {
+    example: {
+      requiresOAuth: false,
+      connectionState: 'disconnected' as const,
+      connectionStateSource: 'unobserved' as const,
+    },
+  };
+  const results = {
+    example: {
+      id: 'attempt',
+      configKey: getMCPConnectKey(initial, 'owner'),
+      configurationUpdatedAt: 200,
+      state: 'connected' as const,
+    },
+  };
+  expect(
+    applyMCPConnectResults(statuses, results, { example: recovered }, 'owner')?.example
+      .connectionState,
+  ).toBe('connected');
+  const edited = { ...recovered, updatedAt: 300 };
+  expect(
+    applyMCPConnectResults(statuses, results, { example: edited }, 'owner')?.example
+      .connectionState,
+  ).toBe('disconnected');
 });

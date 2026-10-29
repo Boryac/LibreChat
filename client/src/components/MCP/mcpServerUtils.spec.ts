@@ -74,3 +74,9 @@ describe('shouldShowActionButton', () => {
     expect(shouldShowActionButton({ ...baseProps, hasCustomUserVars: false })).toBe(false);
   });
 });
+
+it('preserves connected readiness from older replicas without configurationState', () => {
+  expect(
+    isMCPServerReadyForAgent({ connectionState: 'connected', requiresOAuth: false }, false, true),
+  ).toBe(true);
+});

@@ -174,16 +174,13 @@ export function isMCPServerReadyForAgent(
   requestScoped: boolean,
   hasCustomUserVars = false,
 ): boolean {
-  if (
-    status?.configurationState === 'needs_configuration' ||
-    (hasCustomUserVars && status?.configurationState !== 'configured')
-  ) {
+  if (status?.configurationState === 'needs_configuration') {
     return false;
   }
   if (status?.connectionState === 'connected') {
     return true;
   }
-  if (!requestScoped) {
+  if (!requestScoped || (hasCustomUserVars && status?.configurationState !== 'configured')) {
     return false;
   }
   return (

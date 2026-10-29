@@ -74,6 +74,7 @@ export const getServerInitState = (
 export interface MCPConnectResult {
   id: string;
   configKey: string;
+  configurationUpdatedAt?: number;
   state: 'connecting' | 'connected' | 'error';
   authorizationGeneration?: string;
 }
