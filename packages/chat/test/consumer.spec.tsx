@@ -5,22 +5,27 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Chat } from '@librechat/chat';
 import { createInstance } from 'i18next';
 import { ContentTypes } from 'librechat-data-provider';
-import { Part, Text } from '@librechat/chat/components';
+import { Part, Text, MessageRow, getHeaderHoverLabel } from '@librechat/chat/components';
 import { initReactI18next, I18nextProvider } from 'react-i18next';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { Button, Textarea, ThemeProvider, clickHouseTheme } from '@librechat/client';
-import { MessageContext, MessagePartIndex, MessagePartsHostProvider } from '@librechat/chat/react';
+import {
+  MessageContext,
+  MessagePartIndex,
+  MessagesHostProvider,
+  MessagePartsHostProvider,
+} from '@librechat/chat/react';
 import type { ChatEvent, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatState, ChatStream, ChatTransport } from '@librechat/chat';
 import type { PartRenderers } from '@librechat/chat/components';
-import type { MessagePartsHost } from '@librechat/chat/react';
+import type { MessagesHost, MessagePartsHost } from '@librechat/chat/react';
 import type { ReactElement } from 'react';
 
 /**
  * An outside consumer of the package: it reaches LibreChat's chat only through the published
  * entries (`@librechat/chat`, `/react`, `/components`) and the `@librechat/client` theme, with an
- * in-memory transport in place of a server. It grows as the session, message list and composer
- * move into the package.
+ * in-memory transport in place of a server. Rows come from the package's `MessageRow`; the list
+ * around them and the composer stay consumer-built until those move into the package.
  */
 
 /** A stream the test feeds frame by frame. */
@@ -98,13 +103,15 @@ function createChat(transport: ChatTransport): Chat {
       const parentMessageId = messages[messages.length - 1]?.messageId ?? null;
       const messageId = `user-${++ids}`;
       const responseMessageId = `reply-${ids}`;
-      const base = { conversationId: 'convo' };
+      const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
       const user: TMessage = { ...base, messageId, parentMessageId, isCreatedByUser: true, text };
       const reply: TMessage = {
         ...base,
         messageId: responseMessageId,
         parentMessageId: messageId,
         isCreatedByUser: false,
+        sender: 'Assistant',
+        model: 'memory-model',
         text: '',
       };
       return {
@@ -168,6 +175,11 @@ const host: MessagePartsHost = {
   useLiveAppliedSteer: () => [false, () => undefined],
 };
 
+const messagesHost: MessagesHost = {
+  useHour12: () => false,
+  renderFiles: () => null,
+};
+
 const renderers: PartRenderers = {
   parts: {
     [ContentTypes.TEXT]: ({ part, showCursor, isCreatedByUser }) => (
@@ -197,33 +209,51 @@ function ChatView({ chat }: { chat: Chat }): ReactElement {
     void chat.sendMessage({ parts: [{ type: 'text', text }] });
   };
   return (
-    <MessagePartsHostProvider host={host}>
-      <ol aria-label="Messages">
-        {messages.map((message) => (
-          <li key={message.messageId} aria-label={message.isCreatedByUser ? 'You' : 'Assistant'}>
-            <MessageContext.Provider value={{ messageId: message.messageId, isExpanded: false }}>
-              {partsOf(message).map((part, index) => (
-                <MessagePartIndex key={index} index={index}>
-                  <Part
-                    part={part}
-                    renderers={renderers}
-                    isSubmitting={status !== 'ready'}
-                    showCursor={false}
-                    isCreatedByUser={message.isCreatedByUser}
-                  />
-                </MessagePartIndex>
-              ))}
-            </MessageContext.Provider>
-          </li>
-        ))}
-      </ol>
-      <p role="status">{status}</p>
-      <label htmlFor="composer">Message</label>
-      <Textarea id="composer" value={text} onChange={(event) => setText(event.target.value)} />
-      <Button type="button" onClick={send}>
-        Send
-      </Button>
-    </MessagePartsHostProvider>
+    <MessagesHostProvider host={messagesHost}>
+      <MessagePartsHostProvider host={host}>
+        <ol aria-label="Messages">
+          {messages.map((message) => {
+            const label = message.isCreatedByUser ? 'You' : (message.sender ?? 'Assistant');
+            return (
+              <li key={message.messageId}>
+                <MessageRow
+                  message={message}
+                  label={label}
+                  ariaLabel={label}
+                  hoverLabel={getHeaderHoverLabel(false, message.model)}
+                  icon={null}
+                  footer={null}
+                  timestamp={message.createdAt}
+                  isCreatedByUser={message.isCreatedByUser}
+                >
+                  <MessageContext.Provider
+                    value={{ messageId: message.messageId, isExpanded: false }}
+                  >
+                    {partsOf(message).map((part, index) => (
+                      <MessagePartIndex key={index} index={index}>
+                        <Part
+                          part={part}
+                          renderers={renderers}
+                          isSubmitting={status !== 'ready'}
+                          showCursor={false}
+                          isCreatedByUser={message.isCreatedByUser}
+                        />
+                      </MessagePartIndex>
+                    ))}
+                  </MessageContext.Provider>
+                </MessageRow>
+              </li>
+            );
+          })}
+        </ol>
+        <p role="status">{status}</p>
+        <label htmlFor="composer">Message</label>
+        <Textarea id="composer" value={text} onChange={(event) => setText(event.target.value)} />
+        <Button type="button" onClick={send}>
+          Send
+        </Button>
+      </MessagePartsHostProvider>
+    </MessagesHostProvider>
   );
 }
 
@@ -257,7 +287,9 @@ describe('a consumer built on the public entries', () => {
     fireEvent.change(await screen.findByLabelText('Message'), { target: { value: 'Hi' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     const list = await screen.findByRole('list', { name: 'Messages' });
-    expect(await within(list).findByRole('listitem', { name: 'You' })).toHaveTextContent('Hi');
+    const sent = await within(list).findByRole('group', { name: 'You' });
+    expect(within(sent).getByTestId('message-body')).toHaveTextContent('Hi');
+    expect(within(sent).getByRole('heading', { level: 2 })).toHaveTextContent('You');
 
     await act(async () => {
       transport.stream?.push({ type: 'open' });
@@ -266,8 +298,14 @@ describe('a consumer built on the public entries', () => {
         data: { message: true, text: 'Hel', messageId: 'reply-1' },
       });
     });
-    const reply = within(list).getByRole('listitem', { name: 'Assistant' });
-    expect(reply).toHaveTextContent('Hel');
+    const reply = within(list).getByRole('group', { name: 'Assistant' });
+    expect(within(reply).getByTestId('message-body')).toHaveTextContent('Hel');
+    const header = within(reply).getByRole('heading', { level: 2 });
+    expect(header).toHaveTextContent('Assistant');
+    expect(header).toHaveTextContent('memory-model');
+    const time = header.querySelector('time');
+    expect(time).not.toBeNull();
+    expect(Number.isNaN(Date.parse(time?.getAttribute('dateTime') ?? ''))).toBe(false);
     expect(screen.getByRole('status')).toHaveTextContent('streaming');
 
     await act(async () => {
