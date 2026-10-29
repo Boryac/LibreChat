@@ -20,6 +20,7 @@ import type {
   ChatAbortResult,
   ChatAbortRequest,
   ChatStreamAbortResult,
+  ChatResumeSelection,
   ChatTransportError,
 } from './types';
 import { isRetryableNetworkError } from './resumable/start';
@@ -147,6 +148,8 @@ export type ChatInit = {
    * response messages are merged into the list by id and every other event only moves the status.
    */
   applyEvent?(event: ChatEvent, context: ChatEventContext): void;
+  /** The agent selection a generation this chat did not start runs on, which a reattachment reads. */
+  resumeSelection?(): Omit<ChatResumeSelection, 'conversationId' | 'generationCreatedAt'>;
   onError?(error: Error): void;
   onFinish?(result: ChatFinishResult): void;
   /** Every event, after it was applied: the side channels (usage, title, attachments, steering). */
@@ -171,7 +174,7 @@ type Outcome = {
 
 /**
  * A generation on the server as this chat knows it. It outlives the requests attached to it, so a
- * stop and the request it ends read and write one record instead of copying its fields across.
+ * drop, a reattachment and a stop read and write one record instead of copying its fields across.
  */
 type Generation = {
   endpoint?: string;
@@ -180,8 +183,8 @@ type Generation = {
   /** The response this generation produces: the placeholder, then the one a frame names. */
   responseId?: string;
   /**
-   * The generation is not the one this chat prepared (a replacement) and no frame has named its
-   * response yet.
+   * The generation is not the one this chat prepared (a replacement, or a reattachment that found
+   * another generation) and no frame has named its response yet.
    */
   responseUnknown?: boolean;
   /** Set once the server confirmed a stop, so a stream that drops instead of ending aborts. */
@@ -221,6 +224,12 @@ type OptimisticWrite = {
   removed: Set<string>;
 };
 
+type DetachedGeneration = {
+  error: Error;
+  target: Omit<ChatAbortRequest, 'chatId'>;
+  generation: Generation;
+};
+
 type ActiveRequest = {
   controller: AbortController;
   /** The optimistic write, undone when the server never got the turn or ran another in its place. */
@@ -229,7 +238,7 @@ type ActiveRequest = {
   /** The generation this request runs or attaches to. */
   generation: Generation;
   /**
-   * Set while attaching to the generation the server answered the start with, before it attaches,
+   * Set when reattaching to a generation already running on the server, before it attaches,
    * naming the stream a stop addresses meanwhile.
    */
   reattach?: { streamId?: string };
@@ -238,7 +247,7 @@ type ActiveRequest = {
    * attachment unless the server says the generation is gone.
    */
   attached?: boolean;
-  /** The generation the start was answered with; a stream of another one starts a new record. */
+  /** The generation a reattachment continued; a stream of another one starts a new record. */
   inheritedGeneration?: number;
   /** The error the request settled with when its connection dropped. */
   disconnected?: Error;
@@ -675,12 +684,17 @@ export class Chat {
   private readonly listeners = new Set<() => void>();
   private releaseState?: () => void;
   private active?: ActiveRequest;
+  private generationCreatedAt?: number;
   private disposed = false;
   /** Set while the chat writes the state, whose own report of that write the chat announces itself. */
   private writing = false;
   private revision = 0;
   /** Aborted on dispose, which ends every wait on the server so no caller outlives the chat. */
   private readonly lifetime = new AbortController();
+  /** A generation whose stream dropped while the server kept it running. */
+  private detached?: DetachedGeneration;
+  /** The timestamps of the generations a stop or their own stream ended. */
+  private readonly endedGenerations = new Set<number>();
   /** The newest start handed to the transport, whose conversation a late answer must not replace. */
   private latestStart?: ActiveRequest;
   /**
@@ -690,7 +704,7 @@ export class Chat {
   private lostStart?: ActiveRequest;
   /**
    * The conversation this chat runs under: its id, until the server names the one it created for
-   * a chat started under `new`. Every later start and stop addresses that one.
+   * a chat started under `new`. Every later start, stop and reattachment addresses that one.
    */
   private conversation: string;
 
@@ -761,6 +775,115 @@ export class Chat {
   }
 
   /**
+   * Reattaches to the generation the server is still running. The status stays as it is until a
+   * stream is returned, so a chat with nothing running never flashes `submitted`.
+   */
+  async resumeStream(
+    options: { streamId?: string; generationCreatedAt?: number } & ChatRequestOptions = {},
+  ): Promise<void> {
+    if (this.active || this.disposed) {
+      return;
+    }
+    if (options.generationCreatedAt != null && this.isStaleRead(options.generationCreatedAt)) {
+      /** A status read that named an older generation than this chat holds changes nothing. */
+      return;
+    }
+    /** The host's selection is read before any marker changes, so a throw leaves them all as they were. */
+    const selected = this.resumeEndpoint();
+    if (this.active || this.disposed) {
+      /** The host's selection may have started a turn or disposed the chat, which then owns it. */
+      return;
+    }
+    /** A turn whose stream dropped: finding nothing running means it ended without this chat. */
+    const dropped = this.detached;
+    this.detached = undefined;
+    /**
+     * Reattaching to a dropped turn's own generation continues its record, so the turn's identity
+     * and a stop still in flight for it carry over.
+     */
+    const continued =
+      options.generationCreatedAt == null ||
+      options.generationCreatedAt === dropped?.target.generationCreatedAt
+        ? dropped
+        : undefined;
+    const active = createActiveRequest(continued?.generation);
+    const { generation } = active;
+    if (!continued && generation.responseId === undefined) {
+      /**
+       * A reattachment this chat did not prepare has no response until a frame names one. A
+       * continued local turn keeps the list-tail fallback its own request had.
+       */
+      generation.responseUnknown = true;
+    }
+    generation.endpoint = selected ?? dropped?.target.endpoint;
+    /** The generation the caller named, or the record continued, so a stream of another is told apart. */
+    active.inheritedGeneration =
+      options.generationCreatedAt ?? continued?.target.generationCreatedAt;
+    active.reattach = { streamId: options.streamId ?? continued?.target.streamId };
+    active.attached = true;
+    this.active = active;
+    /** Only the generation this continues vouches for a timestamp, so a stop made now addresses it. */
+    this.generationCreatedAt = options.generationCreatedAt ?? active.inheritedGeneration;
+    const conversationId = generation.conversationId ?? this.conversationId;
+    try {
+      this.setConnection('reconnecting');
+      if (active.controller.signal.aborted) {
+        /** A listener of that notification stopped or disposed the chat; nothing is opened. */
+        throw active.controller.signal.reason;
+      }
+      const stream = await openUntilAborted(
+        this.init.transport.reconnectToStream({
+          ...options,
+          chatId: conversationId,
+          resume: true,
+          abortSignal: active.controller.signal,
+        }),
+        active.controller.signal,
+        (opened) => opened?.close(),
+      );
+      /** The server answered for the conversation, so a lost start in it is no longer the caller's. */
+      this.releaseLostStart();
+      if (!stream && generation.stopAnswered) {
+        /** A stop still in flight decides how an empty reconnect ended. */
+        await generation.stopAnswered;
+      }
+      if (!this.owns(active)) {
+        return;
+      }
+      if (!stream && generation.stopped) {
+        this.settle(getStopOutcome(generation), active);
+        return;
+      }
+      /**
+       * A caller that named the generation, as a status read does, knew it running; an unnamed
+       * probe finding nothing only means nothing runs. A generation already seen ending is done.
+       */
+      const named =
+        options.generationCreatedAt != null &&
+        !this.endedGenerations.has(options.generationCreatedAt);
+      if (!stream && (named || dropped != null)) {
+        this.settle({ kind: 'complete', settled: { conversationId } }, active);
+        return;
+      }
+      if (!stream) {
+        /** Nothing is running and nothing said it was; published as one change. */
+        if (this.status === 'submitted' || this.status === 'streaming') {
+          this.init.state.status = 'ready';
+        }
+        this.init.state.connection = 'idle';
+        this.release(active);
+        this.notify();
+        return;
+      }
+      await this.consume(stream, active);
+    } catch (error) {
+      this.settle(this.toOutcome(error, active), active);
+    } finally {
+      this.release(active);
+    }
+  }
+
+  /**
    * Stops the turn in flight. A request still starting is cancelled; an attached stream is
    * stopped on the server, and this resolves once the stream reported its end. Rejects when the
    * server refused the stop, leaving the stream attached. Resolves with the steers the run never
@@ -773,11 +896,15 @@ export class Chat {
       return { status: 'idle' };
     }
     const active = this.active;
+    if (!active && this.detached) {
+      return this.orUnaddressed(await this.stopDetached(this.detached));
+    }
     if (!active) {
       /** The lost start is still the caller's. */
       return this.lostStart ? unaddressable : { status: 'idle' };
     }
     if (!active.stream && !active.reattach) {
+      const { detached } = this;
       active.controller.abort();
       await active.finished;
       /**
@@ -786,6 +913,14 @@ export class Chat {
        */
       const own: ChatStopResult =
         active.sent && !active.resolved ? unaddressable : { status: 'stopped' };
+      if (detached && this.detached === detached) {
+        /**
+         * The cancelled retry never took over the dropped generation, which this stop also ends,
+         * even when a turn its completion callback started is preparing meanwhile.
+         */
+        const result = await this.stopDetached(detached);
+        return active.sent ? own : this.orUnaddressed(result);
+      }
       return this.orUnaddressed(own);
     }
     const { generation } = active;
@@ -796,7 +931,10 @@ export class Chat {
     const target = {
       endpoint: generation.endpoint,
       streamId,
-      generationCreatedAt: active.stream?.generationCreatedAt ?? active.inheritedGeneration,
+      generationCreatedAt:
+        active.stream?.generationCreatedAt ??
+        this.generationCreatedAt ??
+        active.inheritedGeneration,
       abortKey: streamId == null ? this.abortKey(generation) : undefined,
     };
     if (!this.isAddressable(target)) {
@@ -827,6 +965,9 @@ export class Chat {
     const since = this.latestStart;
     const answer = this.abortOnServer(target).then((result) => {
       generation.stopped = true;
+      if (target.generationCreatedAt != null) {
+        this.endedGenerations.add(target.generationCreatedAt);
+      }
       this.adoptStopAnswer(generation, result, since);
       generation.settledAs = getSettledAs(result);
       if (!generation.settledAs && isStreamAbort(result) && result.persistenceFailed) {
@@ -861,7 +1002,7 @@ export class Chat {
     if (result && 'runMessages' in result) {
       await this.mergeRunMessages(result.runMessages, () => this.active === active && owns());
       if (!owns()) {
-        /** The request opened another generation while the merge waited its turn. */
+        /** The reattachment opened another generation while the merge waited its turn. */
         return getStopResult(result, generation.stoppedConversationId);
       }
       active.controller.abort();
@@ -875,7 +1016,7 @@ export class Chat {
       active.stream?.close();
     } else if (!active.stream && !generation.persistenceFailed) {
       /**
-       * Still attaching: nothing will report the end, so the stop ends the request here. An
+       * Still reattaching: nothing will report the end, so the stop ends the request here. An
        * unsaved stop stays attached for the reconcile frame that reports it.
        */
       active.controller.abort();
@@ -884,6 +1025,11 @@ export class Chat {
     if (this.disposed) {
       /** A chat disposed while the stop ended its request writes no state. */
       return getStopResult(result, generation.stoppedConversationId);
+    }
+    /** The server confirmed the stop, so this generation is over however its stream ended. */
+    if (active.disconnected && this.error === active.disconnected) {
+      this.init.state.error = undefined;
+      this.init.state.status = 'ready';
     }
     this.notify();
     return getStopResult(result, generation.stoppedConversationId);
@@ -927,6 +1073,10 @@ export class Chat {
     }
     void this.abortOnServer(target).then(
       (result) => {
+        /** Like any confirmed stop, so a late status read of its generation is ignored. */
+        if (generationCreatedAt != null) {
+          this.endedGenerations.add(generationCreatedAt);
+        }
         /** The answer names the conversation the start created, unless a newer start owns the chat. */
         this.adoptStopAnswer(active.generation, result, active);
         this.resolveLostStart(active);
@@ -980,6 +1130,17 @@ export class Chat {
     this.init.state.error = undefined;
     this.init.state.status = 'ready';
     this.notify();
+  }
+
+  /**
+   * Clears a lost start the server's answer for its conversation covers: one generation runs per
+   * conversation, so the answer owns or superseded it. A start sent under `new` created a
+   * conversation of its own, which no other answer covers, so it stays the caller's to stop.
+   */
+  private releaseLostStart(): void {
+    if (this.lostStart?.sentUnder !== Constants.NEW_CONVO) {
+      this.lostStart = undefined;
+    }
   }
 
   /**
@@ -1071,6 +1232,71 @@ export class Chat {
     return result;
   }
 
+  /** Stops a generation whose stream dropped, which the server keeps running. */
+  private async stopDetached(detached: DetachedGeneration): Promise<ChatStopResult> {
+    if (!this.isAddressable(detached.target)) {
+      return unaddressable;
+    }
+    const { generation } = detached;
+    const result = await this.stopGeneration(generation, detached.target);
+    const active = this.active;
+    if (!this.disposed && active?.generation === generation) {
+      /** A reattachment took the generation over while the stop was in flight; it ends with it. */
+      return this.endStopped(active, generation, result);
+    }
+    /** The dropped generation owns the chat only while no newer request does, such as a retry. */
+    const owns = () => !this.disposed && this.detached === detached && !this.active;
+    if (!owns()) {
+      return getStopResult(result, generation.stoppedConversationId);
+    }
+    if (result && 'runMessages' in result) {
+      await this.mergeRunMessages(result.runMessages, owns);
+      if (!owns()) {
+        /** A newer generation took over while the merge waited its turn. */
+        return getStopResult(result, generation.stoppedConversationId);
+      }
+    }
+    this.detached = undefined;
+    if (this.publishUnframedStop(result, generation)) {
+      return getStopResult(result, generation.stoppedConversationId);
+    }
+    if (this.error === detached.error) {
+      this.init.state.error = undefined;
+      this.init.state.status = 'ready';
+    }
+    this.notify();
+    return getStopResult(result, generation.stoppedConversationId);
+  }
+
+  /**
+   * Reports a stop whose end no attached stream will frame: one the run had already settled, one
+   * the server could not save, or one it stopped and saved, whose abort frame no stream is left to
+   * carry. The host reloads what the server kept. Returns whether it did.
+   */
+  private publishUnframedStop(result: ChatAbortResult, generation: Generation): boolean {
+    const settledAs = getSettledAs(result);
+    const persistenceFailed = isStreamAbort(result) && result.persistenceFailed;
+    const stopFramed = isStreamAbort(result) && !settledAs && !persistenceFailed;
+    if (!settledAs && !persistenceFailed && !stopFramed) {
+      return false;
+    }
+    const outcome = getStopOutcome({
+      settledAs,
+      persistenceFailed,
+      stopFramed,
+      stoppedConversationId: generation.stoppedConversationId,
+    });
+    /** A lost start still owed its own abort keeps the failure it reported. */
+    const owed = this.lostStart && this.error ? this.error : undefined;
+    this.publish(outcome, generation.responseId, generation.responseUnknown, false, owed);
+    return true;
+  }
+
+  /** The endpoint a generation this chat did not start runs on, as the host selects it. */
+  private resumeEndpoint(): string | undefined {
+    return this.init.resumeSelection?.().endpoint ?? undefined;
+  }
+
   /** Returns a failed chat to `ready`. AI SDK: `clearError`. */
   clearError(): void {
     if (this.status !== 'error') {
@@ -1111,7 +1337,7 @@ export class Chat {
     active?.controller.abort();
     active?.stream?.close();
     const { state } = this.init;
-    const unsent = active != null && !active.sent;
+    const unsent = active != null && !active.sent && !active.reattach;
     const rollback = unsent ? active.optimistic : undefined;
     const status = unsent && state.status === 'submitted' ? 'ready' : state.status;
     if (rollback || status !== state.status || state.connection !== 'idle') {
@@ -1220,29 +1446,67 @@ export class Chat {
       if (result.status !== 'stream') {
         this.learnConversation(result.conversationId);
       }
-      if (this.lostStart?.sentUnder !== Constants.NEW_CONVO) {
-        /**
-         * The server took a start in the lost start's conversation, where one generation runs, so it
-         * owns or superseded it. One sent under `new` created a conversation no other start covers.
-         */
-        this.lostStart = undefined;
+      /**
+       * The server took the start, so it owns or superseded a generation whose stream dropped.
+       * Until then that generation stays the stop target, in case the start fails.
+       */
+      const dropped = this.detached;
+      this.detached = undefined;
+      /** Likewise a lost start stays the caller's to stop until the server takes one in its conversation. */
+      this.releaseLostStart();
+      let answered: number | undefined;
+      if (result.status === 'stream') {
+        answered = result.stream.generationCreatedAt;
+      } else if (result.status === 'replaced') {
+        answered = result.generationCreatedAt ?? undefined;
+      }
+      if (answered == null || answered !== dropped?.target.generationCreatedAt) {
+        /** A start the server attached to the dropped generation continues it; any other supersedes it. */
+        this.generationCreatedAt = undefined;
       }
       let stream: ChatStream | null = null;
       if (result.status === 'stream') {
         stream = result.stream;
         /** A start the server attached to a generation already running is an attachment too. */
         active.attached = result.stream.resumed === true;
+        const { generationCreatedAt } = stream;
+        if (
+          generationCreatedAt != null &&
+          generationCreatedAt === dropped?.target.generationCreatedAt
+        ) {
+          /** The server attached the start to the dropped generation, whose record it continues. */
+          active.generation = dropped.generation;
+          active.inheritedGeneration = generationCreatedAt;
+          const rollback = active.optimistic;
+          if (rollback) {
+            /** That generation is not this turn, so this turn's optimistic write is undone. */
+            await this.executor.run(() => {
+              this.write(undoOptimisticWrite(rollback, this.messages));
+            });
+          }
+        }
       } else if (result.status === 'replaced') {
+        const generationCreatedAt = result.generationCreatedAt ?? undefined;
+        /** The target is recorded before anyone hears of the reconnect, so a stop can reach it. */
+        this.generationCreatedAt = generationCreatedAt;
         /**
          * The replacement it names, so a stream of yet another generation gets its own record.
          * Recorded before the rollback notifies, so a stop made then addresses the replacement.
          */
-        active.inheritedGeneration = result.generationCreatedAt ?? undefined;
+        active.inheritedGeneration = generationCreatedAt;
         active.reattach = { streamId: result.streamId };
         active.attached = true;
-        /** The replacement's response is not this turn's placeholder; its first frame names it. */
-        active.generation.responseId = undefined;
-        active.generation.responseUnknown = true;
+        if (
+          generationCreatedAt != null &&
+          generationCreatedAt === dropped?.target.generationCreatedAt
+        ) {
+          /** The dropped generation itself: its record carries the stop still in flight for it. */
+          active.generation = dropped.generation;
+        } else {
+          /** The replacement's response is not this turn's placeholder; its first frame names it. */
+          active.generation.responseId = undefined;
+          active.generation.responseUnknown = true;
+        }
         active.generation.conversationId = result.conversationId;
         const rollback = active.optimistic;
         if (rollback) {
@@ -1302,17 +1566,21 @@ export class Chat {
       return;
     }
     active.stream = stream;
+    this.detached = undefined;
     if (
       active.inheritedGeneration != null &&
       stream.generationCreatedAt != null &&
       stream.generationCreatedAt !== active.inheritedGeneration
     ) {
       /**
-       * The attachment found another generation, whose response no frame has named yet. It gets
-       * its own record, so a stop of the one it was answered with does not end it.
+       * The reattachment found another generation, whose response no frame has named yet. It gets
+       * its own record, so a stop of the one it continued does not end it.
        */
       const { endpoint, conversationId } = active.generation;
       active.generation = { endpoint, conversationId, responseUnknown: true };
+    }
+    if (stream.generationCreatedAt != null) {
+      this.generationCreatedAt = stream.generationCreatedAt;
     }
     let outcome: Outcome | undefined;
     /** The event this chat is applying, whose failure is the chat's, not the generation's. */
@@ -1454,7 +1722,27 @@ export class Chat {
     }
     if (outcome.kind === 'error' && outcome.disconnect) {
       active.disconnected = outcome.error;
-      if (active.sent && !active.stream && !active.reattach && !active.resolved) {
+      const streamId = active.stream?.streamId ?? active.reattach?.streamId;
+      if (
+        (active.stream || active.reattach) &&
+        active.generation.endpoint &&
+        !active.generation.stopped
+      ) {
+        /** The server keeps the generation running, so a later stop still reaches it. */
+        this.detached = {
+          error: outcome.error,
+          target: {
+            endpoint: active.generation.endpoint,
+            streamId,
+            generationCreatedAt:
+              active.stream?.generationCreatedAt ??
+              this.generationCreatedAt ??
+              active.inheritedGeneration,
+            abortKey: streamId == null ? this.abortKey(active.generation) : undefined,
+          },
+          generation: active.generation,
+        };
+      } else if (active.sent && !active.stream && !active.reattach && !active.resolved) {
         /** The start may have reached the server, which answered nothing this chat can address. */
         this.lostStart = active;
       }
@@ -1464,6 +1752,16 @@ export class Chat {
      * that starts the next turn is not overwritten by this one's terminal state.
      */
     this.active = undefined;
+    if (outcome.kind !== 'error' || !outcome.disconnect) {
+      /** Including an attachment that found its generation already finished. */
+      const ended =
+        active.stream?.generationCreatedAt ??
+        active.inheritedGeneration ??
+        (active.reattach ? this.generationCreatedAt : undefined);
+      if ((active.stream || active.reattach) && ended != null) {
+        this.endedGenerations.add(ended);
+      }
+    }
     const { responseId, responseUnknown, responseless, conversationId } = active.generation;
     const named = conversationId !== Constants.NEW_CONVO ? conversationId : undefined;
     /** A lost start still owed its own abort keeps the failure it reported. */
@@ -1491,6 +1789,23 @@ export class Chat {
       generation.responseId = responseMessageId;
       generation.responseUnknown = false;
     }
+  }
+
+  /**
+   * Whether a status read names a generation this chat already knows is over or superseded: one
+   * that ended, or one older than any generation the chat has seen, including one that since ended.
+   */
+  private isStaleRead(generationCreatedAt: number): boolean {
+    if (this.endedGenerations.has(generationCreatedAt)) {
+      return true;
+    }
+    /** Every generation this chat saw, running or over, so an older read stays stale after it ends. */
+    const seen = [
+      ...this.endedGenerations,
+      this.detached?.target.generationCreatedAt,
+      this.generationCreatedAt,
+    ];
+    return seen.some((known) => known != null && generationCreatedAt < known);
   }
 
   /** Adopts the conversation the server created for a chat started under `new`; a real id stays. */
@@ -1558,6 +1873,11 @@ export class Chat {
       ...(reportedConversation !== undefined && { conversationId: reportedConversation }),
       ...(settled?.reason !== undefined && { reconcileReason: settled.reason }),
     });
+  }
+
+  /** Whether `active` still holds this chat, which an async continuation checks before acting. */
+  private owns(active: ActiveRequest): boolean {
+    return !this.disposed && this.active === active;
   }
 
   private release(active: ActiveRequest): void {
