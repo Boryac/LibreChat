@@ -815,7 +815,8 @@ export class Chat {
        */
       generation.responseUnknown = true;
     }
-    generation.endpoint = selected ?? dropped?.target.endpoint;
+    /** A continued generation runs where it started; the host's selection names any other. */
+    generation.endpoint = continued?.target.endpoint ?? selected ?? dropped?.target.endpoint;
     /** The generation the caller named, or the record continued, so a stream of another is told apart. */
     active.inheritedGeneration =
       options.generationCreatedAt ?? continued?.target.generationCreatedAt;

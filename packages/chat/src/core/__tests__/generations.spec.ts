@@ -2451,3 +2451,40 @@ describe('Chat replacements and the notifications their rollback sends', () => {
     );
   });
 });
+
+describe('Chat reattachment endpoints', () => {
+  it('a reattachment to a dropped generation keeps its endpoint when the host selection changed', async () => {
+    let endpoint = 'agents';
+    const h = createHarness({ resumeSelection: () => ({ endpoint }) });
+    await states.detached(h);
+    endpoint = 'assistants';
+    h.transport.reconnectToStream.mockImplementationOnce(() => new Promise(() => undefined));
+    h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 100 }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await flush();
+    h.transport.abort.mockResolvedValueOnce({ success: true, aborted: 'convo-1' });
+    await h.chat.stop();
+
+    expect(h.transport.abort).toHaveBeenLastCalledWith(
+      expect.objectContaining({ endpoint: 'agents' }),
+    );
+  });
+
+  it('a reattachment to a generation this chat did not start uses the host selection', async () => {
+    const h = createHarness({ resumeSelection: () => ({ endpoint: 'assistants' }) });
+    h.transport.reconnectToStream.mockImplementationOnce(() => new Promise(() => undefined));
+    h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 100 }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await flush();
+    h.transport.abort.mockResolvedValueOnce({ success: true, aborted: 'convo-1' });
+    await h.chat.stop();
+
+    expect(h.transport.abort).toHaveBeenLastCalledWith(
+      expect.objectContaining({ endpoint: 'assistants' }),
+    );
+  });
+});
