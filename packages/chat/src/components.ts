@@ -74,3 +74,9 @@ export {
   FOLD_GLYPH_SELECTOR,
   ARTIFACT_ROW_NAV_SPACING,
 } from './components/parts/rows';
+
+/** Chat pane: the layout that seats the header, message column and composer band. */
+export { default as ChatPane } from './components/pane/ChatPane';
+export { getChatPaneView } from './components/pane/view';
+export type { ChatPaneProps } from './components/pane/ChatPane';
+export type { ChatPaneView } from './components/pane/view';
