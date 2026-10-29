@@ -7,6 +7,7 @@ const discoveryFields = new Set([
   'initDuration',
   'capabilities',
   'inspectionFailed',
+  'requiresOAuth',
   'updatedAt',
 ]);
 
@@ -14,7 +15,7 @@ export function getMCPConnectKey(
   server: MCPServersListResponse[string] | undefined,
   owner: string,
 ): string {
-  // The API includes discovery metadata beyond the declared configuration type.
+  // Inspection can change derived fields. The used revision fences configuration edits.
   const configuration = Object.fromEntries(
     Object.entries(server ?? {}).filter(([key]) => !discoveryFields.has(key)),
   );

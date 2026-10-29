@@ -8,7 +8,12 @@ const server = {
 
 it('retains a Connect outcome when only discovered metadata changes', () => {
   const initial = { ...server, initDuration: 25, inspectionFailed: true };
-  const discovered = { ...server, initDuration: 100, inspectionFailed: false };
+  const discovered = {
+    ...server,
+    initDuration: 100,
+    inspectionFailed: false,
+    requiresOAuth: false,
+  };
   const statuses = {
     example: {
       requiresOAuth: false,
@@ -64,5 +69,30 @@ it('binds recovered Connect to the used revision and rejects later configuration
   expect(
     applyMCPConnectResults(statuses, results, { example: edited }, 'owner')?.example
       .connectionState,
+  ).toBe('disconnected');
+});
+
+it('never masks an authorization requirement with retained Connect success', () => {
+  const statuses = {
+    example: {
+      requiresOAuth: true,
+      authorizationState: 'needs_authorization' as const,
+      connectionState: 'disconnected' as const,
+    },
+  };
+  const results = {
+    example: {
+      id: 'attempt',
+      configKey: getMCPConnectKey(server, 'owner'),
+      state: 'connected' as const,
+    },
+  };
+  expect(
+    applyMCPConnectResults(
+      statuses,
+      results,
+      { example: { ...server, requiresOAuth: true } },
+      'owner',
+    )?.example.connectionState,
   ).toBe('disconnected');
 });
