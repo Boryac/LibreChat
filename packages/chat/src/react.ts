@@ -125,3 +125,15 @@ export {
   setDefaultMessagesHost,
 } from './react/messages/host';
 export type { MessagesHost } from './react/messages/host';
+export {
+  RowMountProvider,
+  useRowMountWindow,
+  useProgressiveRowMount,
+  completeProgressiveRowMounts,
+} from './react/messages/useProgressiveRowMount';
+export type { RowMountWindow } from './react/messages/useProgressiveRowMount';
+export {
+  default as useScrollbarGutter,
+  useScrollbarGutterSeed,
+  SCROLLBAR_GUTTER_PROPERTY,
+} from './react/messages/useScrollbarGutter';

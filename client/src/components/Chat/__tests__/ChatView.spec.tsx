@@ -40,7 +40,6 @@ jest.mock('@librechat/chat/react', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => (key === 'com_ui_new_chat' ? 'New chat' : key),
   useAddedResponse: () => ({}),
-  useScrollbarGutterSeed: jest.fn(),
 }));
 
 jest.mock('~/hooks/SSE', () => ({
