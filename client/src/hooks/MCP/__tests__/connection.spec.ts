@@ -35,6 +35,7 @@ it('retains a Connect outcome when only discovered metadata changes', () => {
 it('invalidates a result when configuration or its owner changes', () => {
   const key = getMCPConnectKey(server, 'owner');
   expect(getMCPConnectKey({ ...server, url: 'https://changed.test' }, 'owner')).not.toBe(key);
-  expect(getMCPConnectKey({ ...server, updatedAt: 123 }, 'owner')).not.toBe(key);
+  const updatedServer = { ...server, updatedAt: 123 };
+  expect(getMCPConnectKey(updatedServer, 'owner')).not.toBe(key);
   expect(getMCPConnectKey(server, 'other-owner')).not.toBe(key);
 });

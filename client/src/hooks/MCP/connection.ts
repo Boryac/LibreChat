@@ -1,20 +1,22 @@
 import type { MCPServerStatus, MCPServersListResponse } from 'librechat-data-provider';
 import type { MCPConnectResult } from '~/store/mcp';
 
+const discoveryFields = new Set([
+  'tools',
+  'toolFunctions',
+  'initDuration',
+  'capabilities',
+  'inspectionFailed',
+]);
+
 export function getMCPConnectKey(
   server: MCPServersListResponse[string] | undefined,
   owner: string,
 ): string {
-  if (!server) return JSON.stringify([owner]);
-  // Discovery can change these without changing the server configuration.
-  const {
-    tools: _tools,
-    toolFunctions: _toolFunctions,
-    initDuration: _initDuration,
-    capabilities: _capabilities,
-    inspectionFailed: _inspectionFailed,
-    ...configuration
-  } = server;
+  // The API includes discovery metadata beyond the declared configuration type.
+  const configuration = Object.fromEntries(
+    Object.entries(server ?? {}).filter(([key]) => !discoveryFields.has(key)),
+  );
   return JSON.stringify([owner, configuration]);
 }
 
