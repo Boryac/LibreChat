@@ -1027,6 +1027,13 @@ export class Chat {
       /** A chat disposed while the stop ended its request writes no state. */
       return getStopResult(result, generation.stoppedConversationId);
     }
+    if (!this.active && this.detached?.generation === generation) {
+      /** The request dropped before the answer arrived, so the answer ends what it left running. */
+      this.detached = undefined;
+      if (this.publishUnframedStop(result, generation)) {
+        return getStopResult(result, generation.stoppedConversationId);
+      }
+    }
     /** The server confirmed the stop, so this generation is over however its stream ended. */
     if (active.disconnected && this.error === active.disconnected) {
       this.init.state.error = undefined;
@@ -1287,9 +1294,18 @@ export class Chat {
       stopFramed,
       stoppedConversationId: generation.stoppedConversationId,
     });
+    /** An answer that names no stream leaves the conversation the generation's frames named. */
+    const { conversationId } = generation;
+    const named = conversationId !== Constants.NEW_CONVO ? conversationId : undefined;
     /** A lost start still owed its own abort keeps the failure it reported. */
     const owed = this.lostStart && this.error ? this.error : undefined;
-    this.publish(outcome, generation.responseId, generation.responseUnknown, false, owed);
+    this.publish(
+      { ...outcome, conversationId: named },
+      generation.responseId,
+      generation.responseUnknown,
+      false,
+      owed,
+    );
     return true;
   }
 
@@ -1462,7 +1478,15 @@ export class Chat {
         answered = result.generationCreatedAt ?? undefined;
       }
       if (answered == null || answered !== dropped?.target.generationCreatedAt) {
-        /** A start the server attached to the dropped generation continues it; any other supersedes it. */
+        /**
+         * A start the server attached to the dropped generation continues it; any other supersedes
+         * it, which stays in the stale-read history so a late read of it changes nothing.
+         */
+        for (const superseded of [this.generationCreatedAt, dropped?.target.generationCreatedAt]) {
+          if (superseded != null) {
+            this.endedGenerations.add(superseded);
+          }
+        }
         this.generationCreatedAt = undefined;
       }
       let stream: ChatStream | null = null;
@@ -1475,9 +1499,13 @@ export class Chat {
           generationCreatedAt != null &&
           generationCreatedAt === dropped?.target.generationCreatedAt
         ) {
-          /** The server attached the start to the dropped generation, whose record it continues. */
+          /**
+           * The server attached the start to the dropped generation, whose record it continues. The
+           * stream is installed before the rollback notifies, so a stop made then addresses it.
+           */
           active.generation = dropped.generation;
           active.inheritedGeneration = generationCreatedAt;
+          active.stream = stream;
           const rollback = active.optimistic;
           if (rollback) {
             /** That generation is not this turn, so this turn's optimistic write is undone. */

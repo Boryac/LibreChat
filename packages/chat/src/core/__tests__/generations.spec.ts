@@ -2488,3 +2488,120 @@ describe('Chat reattachment endpoints', () => {
     );
   });
 });
+
+describe('Chat dropped generations a retry, a stop or a status read settles', () => {
+  it('a stop a subscriber sends while a retry continuing the dropped generation is undone reaches it', async () => {
+    const h = createHarness();
+    await states.detached(h);
+    const retry = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+    let answer: ((result: ChatSendResult) => void) | undefined;
+    h.transport.sendMessages.mockImplementationOnce(
+      () =>
+        new Promise<ChatSendResult>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const sent = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+    await flush();
+    h.stream = retry;
+    let stopping: Promise<ChatStopResult> | undefined;
+    const unsubscribe = h.chat.subscribe(() => {
+      stopping ??= h.chat.stop();
+    });
+    answer?.({ status: 'stream', stream: retry });
+    await flush();
+    unsubscribe();
+    await sent;
+
+    expect(stopping).toBeDefined();
+    expect((await stopping)?.status).toBe('stopped');
+    expect(h.transport.abort).toHaveBeenLastCalledWith(
+      expect.objectContaining({ streamId: 'convo-1', generationCreatedAt: 100 }),
+    );
+  });
+
+  it('a retry the server settles keeps the dropped generation in the stale-read history', async () => {
+    const h = createHarness();
+    const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 300 });
+    attach(h, stream);
+    send(h);
+    await flush();
+    stream.push(stepEvent);
+    await flush();
+    stream.push(dropEvent);
+    await flush();
+    h.transport.sendMessages.mockResolvedValueOnce({
+      status: 'settled',
+      conversationId: 'convo-1',
+      generationProtocolVersion: 2,
+    });
+    await h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+    await flush();
+    const finishes = h.finishes.length;
+    h.transport.reconnectToStream.mockClear();
+    h.transport.reconnectToStream.mockResolvedValueOnce(null);
+    await h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 200 });
+    await flush();
+
+    expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
+    expect(h.finishes).toHaveLength(finishes);
+  });
+
+  it('(7) a stop the server finds gone reports the conversation the dropped generation named', async () => {
+    const h = createHarness({
+      id: 'new',
+      prepareRequest: () => ({
+        payload: { ...payload, conversationId: null } as unknown as TPayload,
+        messages: [userMessage, placeholder],
+        responseMessageId: 'response-1',
+      }),
+    });
+    const stream = createStream({ streamId: createdUnder, generationCreatedAt: 100 });
+    attach(h, stream);
+    send(h);
+    await flush();
+    stream.push({
+      type: 'sync',
+      data: { conversationId: createdUnder, responseMessage: placeholder },
+    } as ChatEvent);
+    await flush();
+    stream.push(dropEvent);
+    await flush();
+    h.transport.abort.mockRejectedValueOnce(
+      Object.assign(new Error('gone'), { response: { status: 404 } }),
+    );
+    await h.chat.stop();
+
+    expect(h.finishes[h.finishes.length - 1]).toMatchObject({
+      isSettled: true,
+      conversationId: createdUnder,
+    });
+  });
+
+  it('a stop that outlives a failed reconnect reports what the server saved, and leaves nothing to stop', async () => {
+    const h = createHarness();
+    await states.reattaching(h);
+    let answerStop: (() => void) | undefined;
+    h.transport.abort.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerStop = () =>
+            resolve({ success: true, aborted: 'convo-1', persistenceFailed: true });
+        }),
+    );
+    const stopping = h.chat.stop();
+    await flush();
+    h.fail?.();
+    await flush();
+    answerStop?.();
+    await stopping;
+    await flush();
+
+    expect(h.finishes[h.finishes.length - 1]).toMatchObject({
+      reconcileReason: 'abort_persistence_failed',
+    });
+    h.transport.abort.mockClear();
+    expect((await h.chat.stop()).status).toBe('idle');
+    expect(h.transport.abort).not.toHaveBeenCalled();
+  });
+});
