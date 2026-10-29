@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { submissionByIndex, useIsSubmitting } from '../submission';
 import useQueuedTurnReveal from '../steering/useQueuedTurnReveal';
 import useQueueDrain from '../steering/useQueueDrain';
+import useAdaptiveSSE from '../stream/adaptive';
 import { ChatContext } from './context';
 import useChatHelpers from './helpers';
 import { useChatHost } from './host';
@@ -45,6 +46,8 @@ export function ChatSessionProvider({
   const chat = useChatHelpers(index, conversationId);
   const submission = useAtomValue(submissionByIndex(index));
 
+  useAdaptiveSSE(submission, chat, false, index);
+
   /** Resume waits for messages to load AND the warm-cache background revalidation to settle:
    *  a stale invalidated cache mounts with isLoading false while the refetch is in flight, and
    *  resume must not build from (or race) it. */
@@ -52,7 +55,6 @@ export function ChatSessionProvider({
     index,
     conversationId,
     chat,
-    submission,
     isSettled: !isLoading && !isFetching,
   });
 

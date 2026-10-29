@@ -13,6 +13,7 @@ import { ChatHostProvider } from '../host';
 
 const mockUseChatHelpers = jest.fn();
 const mockUseQueueDrain = jest.fn();
+const mockUseAdaptiveSSE = jest.fn();
 const mockRevealQueuedTurn = jest.fn();
 
 /** The contract and the queue have specs of their own; here they only witness the order and
@@ -24,6 +25,10 @@ jest.mock('../helpers', () => ({
 jest.mock('../../steering/useQueuedTurnReveal', () => ({
   __esModule: true,
   default: () => mockRevealQueuedTurn,
+}));
+jest.mock('../../stream/adaptive', () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockUseAdaptiveSSE(...args),
 }));
 jest.mock('../../steering/useQueueDrain', () => ({
   __esModule: true,
@@ -103,11 +108,11 @@ describe('ChatSessionProvider', () => {
 
     expect(mockUseChatHelpers).toHaveBeenCalledWith(1, 'convo-1');
     expect(served).toBe(contract);
+    expect(mockUseAdaptiveSSE).toHaveBeenLastCalledWith(submission, contract, false, 1);
     expect(useSessionEffects).toHaveBeenLastCalledWith({
       index: 1,
       conversationId: 'convo-1',
       chat: contract,
-      submission,
       isSettled: true,
     });
     expect(mockUseQueueDrain).toHaveBeenCalledWith(
@@ -130,13 +135,14 @@ describe('ChatSessionProvider', () => {
     );
   });
 
-  it('runs the session effects after the contract and before the drain', () => {
+  it('runs the stream and resume after the contract and before the drain', () => {
     const order: string[] = [];
     mockUseChatHelpers.mockImplementation(() => {
       order.push('contract');
       return contract;
     });
     mockUseQueueDrain.mockImplementation(() => order.push('drain'));
+    mockUseAdaptiveSSE.mockImplementation(() => order.push('stream'));
     const { host, useMessages, useSessionEffects } = createHost({
       messages,
       isLoading: false,
@@ -146,9 +152,9 @@ describe('ChatSessionProvider', () => {
       order.push('messages');
       return { messages, isLoading: false, isFetching: false };
     });
-    useSessionEffects.mockImplementation(() => order.push('effects'));
+    useSessionEffects.mockImplementation(() => order.push('resume'));
     renderSession(host);
 
-    expect(order.slice(0, 4)).toEqual(['messages', 'contract', 'effects', 'drain']);
+    expect(order.slice(0, 5)).toEqual(['messages', 'contract', 'stream', 'resume', 'drain']);
   });
 });

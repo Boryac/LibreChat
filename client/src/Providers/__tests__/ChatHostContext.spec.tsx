@@ -3,16 +3,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
-import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { ChatContract } from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
 import { appChatHost } from '../ChatHostContext';
 
-const mockUseAdaptiveSSE = jest.fn();
 const mockUseResumeOnLoad = jest.fn();
 
-/** The SSE hooks own the transport; the host only hands them the session's values. */
+/** Resume owns the transport; the host only hands it the session's values. */
 jest.mock('~/hooks/SSE', () => ({
-  useAdaptiveSSE: (...args: unknown[]) => mockUseAdaptiveSSE(...args),
   useResumeOnLoad: (...args: unknown[]) => mockUseResumeOnLoad(...args),
 }));
 
@@ -81,21 +79,18 @@ describe('appChatHost.useMessages', () => {
 });
 
 describe('appChatHost.useSessionEffects', () => {
-  it('runs the stream and resume on load against the session contract', () => {
+  it('runs resume on load against the session contract', () => {
     const chat = { getMessages: jest.fn() } as unknown as ChatContract;
-    const submission = { conversation: {} } as TSubmission;
 
     renderHook(() =>
       appChatHost.useSessionEffects({
         index: 1,
         conversationId: 'convo-1',
         chat,
-        submission,
         isSettled: true,
       }),
     );
 
-    expect(mockUseAdaptiveSSE).toHaveBeenCalledWith(submission, chat, false, 1);
     expect(mockUseResumeOnLoad).toHaveBeenCalledWith('convo-1', chat.getMessages, 1, true);
   });
 });

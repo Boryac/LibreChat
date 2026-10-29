@@ -10,9 +10,9 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
-import { useAdaptiveSSE, useResumeOnLoad } from '~/hooks/SSE';
 import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import useTurnServices from '~/hooks/Chat/services';
+import { useResumeOnLoad } from '~/hooks/SSE';
 import useNewConvo from '~/hooks/useNewConvo';
 
 /** Cache events that add, drop or rewrite a query's data. */
@@ -112,8 +112,7 @@ export const appChatHost: ChatHost = {
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
   getMappingOptions,
   useMessages,
-  useSessionEffects: ({ index, conversationId, chat, submission, isSettled }) => {
-    useAdaptiveSSE(submission, chat, false, index);
+  useSessionEffects: ({ index, conversationId, chat, isSettled }) => {
     useResumeOnLoad(conversationId, chat.getMessages, index, isSettled);
   },
 };

@@ -154,8 +154,6 @@ export type ChatSessionEffectsParams = {
   index: number;
   conversationId?: string;
   chat: ChatContract;
-  /** The pane's root submission, the turn its stream serves. */
-  submission: TSubmission | null;
   /** The messages finished loading and no revalidation is in flight. */
   isSettled: boolean;
 };
@@ -194,10 +192,10 @@ export interface ChatHost {
     options: { isStreaming: boolean },
   ): ChatMessagesQuery;
   /**
-   * Runs the pane's stream connection and its resume on load.
+   * Runs the pane's resume on load.
    *
-   * @deprecated On arrival: a bridge to the app's SSE hooks until they move into this package,
-   * after which the session runs them itself and this member is removed.
+   * @deprecated On arrival: a bridge to the app's `useResumeOnLoad` until it moves into this
+   * package (#17565), after which the session calls it itself and this member is removed.
    */
   useSessionEffects(params: ChatSessionEffectsParams): void;
 }
