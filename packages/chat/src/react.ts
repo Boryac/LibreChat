@@ -151,3 +151,15 @@ export type {
 export { boundIntentLabel, getToolCallIntent, useToolCallIntent } from './react/parts/intent';
 export { default as useFollowScroll } from './react/parts/useFollowScroll';
 export { default as useRowHandoff } from './react/parts/handoff';
+export {
+  RowMountProvider,
+  useRowMountWindow,
+  useProgressiveRowMount,
+  completeProgressiveRowMounts,
+} from './react/messages/useProgressiveRowMount';
+export type { RowMountWindow } from './react/messages/useProgressiveRowMount';
+export {
+  default as useScrollbarGutter,
+  useScrollbarGutterSeed,
+  SCROLLBAR_GUTTER_PROPERTY,
+} from './react/messages/useScrollbarGutter';

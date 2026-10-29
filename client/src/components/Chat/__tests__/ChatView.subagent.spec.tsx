@@ -40,7 +40,6 @@ jest.mock('@librechat/chat/react', () => ({
 
 jest.mock('~/hooks', () => ({
   useAddedResponse: () => ({}),
-  useScrollbarGutterSeed: jest.fn(),
   useLocalize: () => (key: string) => key,
 }));
 
