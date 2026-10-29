@@ -1,21 +1,34 @@
 import React from 'react';
-import { Provider } from 'jotai';
+import { Provider, createStore } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
-import type { MCPServersResponse, MCPReinitializeResponse } from 'librechat-data-provider';
+import type {
+  MCPServersResponse,
+  MCPReinitializeResponse,
+  MCPServerStatus,
+} from 'librechat-data-provider';
 import { useMCPServerManager } from '../useMCPServerManager';
+import { resetMCPStateAtom } from '~/store/mcp';
 
+const mockServers = {
+  'test-server': { type: 'streamable-http', url: 'https://mcp.example.test', requiresOAuth: false },
+};
 const mockOpenInNewTab = jest.fn();
 jest.mock('~/utils', () => ({ openInNewTab: (...args: unknown[]) => mockOpenInNewTab(...args) }));
 
+const mockUser = { id: 'user', tenantId: 'tenant-a' };
 const mockShowToast = jest.fn();
 const mockSetMCPValues = jest.fn();
 const mockReinitialize = jest.fn();
 const mockUseMCPToolsQuery = jest.fn((_options?: unknown): { data?: MCPServersResponse } => ({
   data: undefined,
 }));
-const mockUseMCPConnectionStatus = jest.fn((_options?: unknown) => ({ connectionStatus: {} }));
+const mockUseMCPConnectionStatus = jest.fn(
+  (_options?: unknown): { connectionStatus: Record<string, MCPServerStatus> } => ({
+    connectionStatus: {},
+  }),
+);
 
 jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: mockShowToast }),
@@ -23,6 +36,7 @@ jest.mock('@librechat/client', () => ({
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+  useAuthContext: () => ({ user: mockUser }),
   useHasAccess: () => true,
   useCatalogReady: () => true,
   useMCPSelect: () => ({ mcpValues: [], setMCPValues: mockSetMCPValues }),
@@ -31,7 +45,7 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: {} }),
-  useMCPServersQuery: () => ({ data: {}, isLoading: false }),
+  useMCPServersQuery: () => ({ data: mockServers, isLoading: false }),
   useMCPToolsQuery: (options: unknown) => mockUseMCPToolsQuery(options),
 }));
 
@@ -214,8 +228,8 @@ describe('useMCPServerManager initialization', () => {
     const connectionStatus = {
       [serverName]: {
         requiresOAuth: true,
-        connectionState: 'connected',
-        authorizationState: 'authorized',
+        connectionState: 'connected' as const,
+        authorizationState: 'authorized' as const,
         authorizationGeneration: 'generation-1',
       },
     };
@@ -277,6 +291,210 @@ describe('useMCPServerManager initialization', () => {
       jest.useRealTimers();
       mockUseMCPConnectionStatus.mockImplementation(() => ({ connectionStatus: {} }));
       mockUseMCPToolsQuery.mockImplementation(() => ({ data: undefined }));
+    }
+  });
+});
+
+describe('replica-independent Connect results', () => {
+  const name = 'test-server';
+  const cold: MCPServerStatus = {
+    requiresOAuth: false,
+    authorizationState: 'not_required',
+    connectionState: 'disconnected',
+    connectionStateSource: 'unobserved',
+    authorizationGeneration: 'generation-2',
+  };
+  const success = {
+    success: true,
+    serverName: name,
+    oauthRequired: false,
+    authorizationGeneration: 'generation-2',
+  };
+  beforeEach(() => {
+    mockReinitialize.mockReset();
+    mockSetMCPValues.mockClear();
+    mockShowToast.mockClear();
+    mockUseMCPToolsQuery.mockReturnValue({ data: undefined });
+    mockUseMCPConnectionStatus.mockReturnValue({ connectionStatus: { [name]: cold } });
+  });
+  afterEach(() => {
+    mockUseMCPConnectionStatus.mockReturnValue({ connectionStatus: {} });
+  });
+  function setup() {
+    const session = createStore();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={session}>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </Provider>
+    );
+    const hook = renderHook(() => useMCPServerManager(), { wrapper });
+    const cleanup = () => {
+      hook.unmount();
+      queryClient.clear();
+    };
+    return { ...hook, session, queryClient, cleanup };
+  }
+
+  it('keeps Connect on A successful when a fresh poll on B has no local client', async () => {
+    mockReinitialize.mockResolvedValueOnce(success);
+    const hook = setup();
+    try {
+      await act(async () => {
+        await hook.result.current.initializeServer(name);
+      });
+      mockUseMCPConnectionStatus.mockReturnValue({ connectionStatus: { [name]: { ...cold } } });
+      hook.rerender();
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('connected');
+      expect(hook.result.current.isInitializing(name)).toBe(false);
+    } finally {
+      hook.cleanup();
+    }
+  });
+
+  it('keeps a failed Connect visible against cold polling and replaces it on retry', async () => {
+    mockReinitialize.mockResolvedValueOnce({
+      ...success,
+      success: false,
+      failureReason: 'initialization_failed',
+    });
+    const hook = setup();
+    try {
+      await act(async () => {
+        await hook.result.current.initializeServer(name);
+      });
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('error');
+      mockReinitialize.mockResolvedValueOnce(success);
+      await act(async () => {
+        await hook.result.current.initializeServer(name);
+      });
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('connected');
+    } finally {
+      hook.cleanup();
+    }
+  });
+
+  it('does not mask a real transport error on B', async () => {
+    mockReinitialize.mockResolvedValueOnce(success);
+    const hook = setup();
+    try {
+      await act(async () => {
+        await hook.result.current.initializeServer(name);
+      });
+      mockUseMCPConnectionStatus.mockReturnValue({
+        connectionStatus: {
+          [name]: {
+            ...cold,
+            connectionState: 'error',
+            connectionStateSource: 'transport',
+          },
+        },
+      });
+      hook.rerender();
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('error');
+    } finally {
+      hook.cleanup();
+    }
+  });
+
+  it('ignores an older successful response after the latest attempt failed', async () => {
+    const first = deferred<MCPReinitializeResponse>();
+    const second = deferred<MCPReinitializeResponse>();
+    mockReinitialize.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const hook = setup();
+    try {
+      let oldRequest: Promise<unknown>;
+      let newRequest: Promise<unknown>;
+      act(() => {
+        oldRequest = hook.result.current.initializeServer(name);
+      });
+      act(() => {
+        newRequest = hook.result.current.initializeServer(name);
+      });
+      await act(async () => {
+        second.resolve({ ...success, success: false });
+        await newRequest;
+      });
+      await act(async () => {
+        first.resolve(success);
+        await oldRequest;
+      });
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('error');
+      expect(mockShowToast).toHaveBeenCalledTimes(1);
+      expect(mockSetMCPValues).not.toHaveBeenCalled();
+    } finally {
+      hook.cleanup();
+    }
+  });
+
+  it('discards a pending result when the tenant changes without changing the server definition', async () => {
+    const pending = deferred<MCPReinitializeResponse>();
+    mockReinitialize.mockReturnValueOnce(pending.promise);
+    const hook = setup();
+    try {
+      let request: Promise<unknown>;
+      act(() => {
+        request = hook.result.current.initializeServer(name);
+      });
+      mockUser.tenantId = 'tenant-b';
+      hook.rerender();
+      await act(async () => {
+        pending.resolve(success);
+        await request;
+      });
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('disconnected');
+      expect(hook.result.current.isInitializing(name)).toBe(false);
+      expect(mockShowToast).not.toHaveBeenCalled();
+    } finally {
+      mockUser.tenantId = 'tenant-a';
+      hook.cleanup();
+    }
+  });
+
+  it('discards the result when the authorization generation changes', async () => {
+    mockReinitialize.mockResolvedValueOnce(success);
+    const hook = setup();
+    try {
+      await act(async () => {
+        await hook.result.current.initializeServer(name);
+      });
+      mockUseMCPConnectionStatus.mockReturnValue({
+        connectionStatus: {
+          [name]: {
+            ...cold,
+            authorizationGeneration: 'revoked-generation',
+          },
+        },
+      });
+      hook.rerender();
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('disconnected');
+    } finally {
+      hook.cleanup();
+    }
+  });
+
+  it('does not let a late response restore state after logout', async () => {
+    const pending = deferred<MCPReinitializeResponse>();
+    mockReinitialize.mockReturnValueOnce(pending.promise);
+    const hook = setup();
+    try {
+      let request: Promise<unknown>;
+      act(() => {
+        request = hook.result.current.initializeServer(name);
+      });
+      act(() => {
+        hook.session.set(resetMCPStateAtom);
+      });
+      await act(async () => {
+        pending.resolve(success);
+        await request;
+      });
+      expect(hook.result.current.connectionStatus?.[name].connectionState).toBe('disconnected');
+      expect(hook.result.current.isInitializing(name)).toBe(false);
+      expect(mockShowToast).not.toHaveBeenCalled();
+      expect(mockSetMCPValues).not.toHaveBeenCalled();
+    } finally {
+      hook.cleanup();
     }
   });
 });

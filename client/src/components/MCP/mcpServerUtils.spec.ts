@@ -36,6 +36,16 @@ describe('isMCPServerReadyForAgent', () => {
     expect(isMCPServerReadyForAgent(configured, true, true)).toBe(true);
   });
 
+  it('rejects missing required variables even with a connected transport', () => {
+    expect(
+      isMCPServerReadyForAgent(
+        { ...status('connected', 'not_required'), configurationState: 'needs_configuration' },
+        false,
+        true,
+      ),
+    ).toBe(false);
+  });
+
   it('requires a live connection for servers that are not request-scoped', () => {
     expect(isMCPServerReadyForAgent(status('disconnected', 'not_required'), false)).toBe(false);
     expect(isMCPServerReadyForAgent(status('connected', 'not_required'), false)).toBe(true);

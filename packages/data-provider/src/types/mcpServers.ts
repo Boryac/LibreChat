@@ -57,6 +57,8 @@ export type MCPReinitializeFailureReason =
   | 'initialization_failed';
 
 export interface MCPReinitializeResponse {
+  /** Credential/catalog generation invalidated by this Connect request. */
+  authorizationGeneration?: string;
   success: boolean;
   message: string;
   serverName: string;
