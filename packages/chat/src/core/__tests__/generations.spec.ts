@@ -2172,6 +2172,26 @@ describe('Chat notify ordering and request ownership', () => {
     expect(attempt.error ?? 'none').not.toBe('none');
     expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
   });
+
+  it('leaves the chat to a turn the host starts while it selects the endpoint of a reattachment', async () => {
+    let started: Promise<void> | undefined;
+    const h = createHarness({
+      resumeSelection: () => {
+        started ??= h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        return { endpoint: 'agents' };
+      },
+    });
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 100 }));
+
+    await h.chat.resumeStream({ streamId: 'convo-1' });
+    await flush();
+
+    expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+    h.stream?.push(finalEvent());
+    await started;
+    expect(h.finishes).toHaveLength(1);
+  });
 });
 
 const liveLearns: Array<[string, (h: Harness) => Promise<void>]> = [
