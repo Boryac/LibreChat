@@ -169,3 +169,79 @@ it.each(['error', 'connecting', 'disconnected'] as const)(
     ).toBe(state);
   },
 );
+
+describe('unavailable status reads after Connect', () => {
+  const results = {
+    example: {
+      id: 'attempt',
+      configKey: getMCPConnectKey(server, 'owner'),
+      settledAt: 100,
+      state: 'connected' as const,
+    },
+  };
+  it.each([false, true])('preserves success when requiresOAuth is %s', (requiresOAuth) => {
+    const statuses = {
+      example: {
+        requiresOAuth,
+        connectionState: 'error' as const,
+        connectionStateSource: 'unavailable' as const,
+      },
+    };
+    expect(
+      applyMCPConnectResults(statuses, results, { example: server }, 'owner', 101)?.example,
+    ).toMatchObject({ connectionState: 'connected', requiresOAuth });
+  });
+  it('retains a scoped success without inventing missing request variables', () => {
+    const statuses = {
+      example: {
+        requiresOAuth: false,
+        requestScoped: true,
+        connectionState: 'error' as const,
+        connectionStateSource: 'unavailable' as const,
+      },
+    };
+    const projected = applyMCPConnectResults(statuses, results, { example: server }, 'owner', 101);
+    expect(projected?.example).toEqual({
+      requiresOAuth: false,
+      authorizationState: 'not_required',
+      requestScoped: true,
+      connectionState: 'connected',
+      connectionStateSource: 'unobserved',
+    });
+    expect(applyMCPConnectResults(statuses, {}, { example: server }, 'owner', 101)).toBe(statuses);
+    expect(applyMCPConnectResults(statuses, results, { example: server }, 'other', 101)).toBe(
+      statuses,
+    );
+    const failed = { example: { ...results.example, state: 'error' as const } };
+    expect(
+      applyMCPConnectResults(statuses, failed, { example: server }, 'owner', 101)?.example
+        .connectionState,
+    ).toBe('error');
+    expect(
+      applyMCPConnectResults(
+        {
+          example: {
+            requiresOAuth: true,
+            authorizationState: 'needs_authorization',
+            connectionState: 'disconnected',
+          },
+        },
+        results,
+        { example: server },
+        'owner',
+        102,
+      )?.example.connectionState,
+    ).toBe('disconnected');
+  });
+  it('keeps a legacy unsourced error authoritative', () => {
+    expect(
+      applyMCPConnectResults(
+        { example: { requiresOAuth: false, connectionState: 'error' } },
+        results,
+        { example: server },
+        'owner',
+        101,
+      )?.example.connectionState,
+    ).toBe('error');
+  });
+});

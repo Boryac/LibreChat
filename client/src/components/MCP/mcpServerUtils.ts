@@ -83,7 +83,7 @@ export function getStatusColor(
   }
 
   const status = connectionStatus?.[serverName];
-  if (!status) {
+  if (!status || status.connectionStateSource === 'unavailable') {
     return 'bg-status-neutral';
   }
 
@@ -132,7 +132,7 @@ export function getStatusTextKey(
   }
 
   const status = connectionStatus?.[serverName];
-  if (!status) {
+  if (!status || status.connectionStateSource === 'unavailable') {
     return 'com_nav_mcp_status_unknown';
   }
 

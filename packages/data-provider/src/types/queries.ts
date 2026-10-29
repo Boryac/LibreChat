@@ -314,8 +314,8 @@ export interface MCPServerStatus {
   /** Whether all declared per-user variables are present. */
   configurationState?: 'configured' | 'needs_configuration';
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
-  /** Absence of a local transport is not a failed connection check. */
-  connectionStateSource?: 'unobserved' | 'transport' | 'authorization';
+  /** An unavailable status read proves no transport, authorization, or configuration state. */
+  connectionStateSource?: 'unobserved' | 'transport' | 'authorization' | 'unavailable';
   authorizationState?:
     | 'not_required'
     | 'authorizing'

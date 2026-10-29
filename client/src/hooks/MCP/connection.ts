@@ -38,6 +38,7 @@ export function reconcileMCPConnectResult(
     result.configurationUpdatedAt !== server.updatedAt
   )
     return;
+  if (current?.connectionStateSource === 'unavailable') return result;
   if (
     current?.configurationState === 'needs_configuration' ||
     (result.authorizationGeneration != null &&
@@ -101,6 +102,10 @@ export function applyMCPConnectResults(
         requiresOAuth: false,
         authorizationState: 'not_required',
         ...current,
+        ...(current?.connectionStateSource === 'unavailable' && {
+          connectionStateSource: 'unobserved',
+          authorizationState: current.requiresOAuth ? undefined : 'not_required',
+        }),
         connectionState: reconciled.state,
       },
     };

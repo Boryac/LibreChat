@@ -103,3 +103,16 @@ export async function resolveMCPConnectionStatus(
     authorizationState,
   };
 }
+
+/** Retain static metadata without inventing observations when a status lookup fails. */
+export function getMCPUnavailableStatus(
+  config: ParsedServerConfig,
+  requiresOAuth: boolean,
+): MCPServerStatus {
+  return {
+    requiresOAuth,
+    ...(requiresEphemeralUserConnection(config) && { requestScoped: true }),
+    connectionState: 'error',
+    connectionStateSource: 'unavailable',
+  };
+}

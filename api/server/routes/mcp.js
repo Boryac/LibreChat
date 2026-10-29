@@ -26,7 +26,7 @@ const {
   OAUTH_SESSION_COOKIE,
   mcpConfig: mcpSettings,
   getServerCustomUserVars,
-  hasCustomUserVars,
+  getMCPUnavailableStatus,
   requiresEphemeralUserConnection,
   readMCPRecoveryGenerationAround,
   prepareMCPAuthorizationMutation,
@@ -977,18 +977,7 @@ router.get('/connection/status', requireJwtAuth, configMiddleware, async (req, r
           } catch (error) {
             const message = `Failed to get status for server "${serverName}"`;
             logger.error(`[MCP Connection Status] ${message},`, error);
-            return [
-              serverName,
-              {
-                connectionState: 'error',
-                requiresOAuth: oauthServers.has(serverName),
-                ...(requiresEphemeralUserConnection(config) && { requestScoped: true }),
-                ...(requiresEphemeralUserConnection(config) &&
-                  hasCustomUserVars(config) && { configurationState: 'needs_configuration' }),
-                authorizationState: oauthServers.has(serverName) ? 'error' : 'not_required',
-                error: message,
-              },
-            ];
+            return [serverName, getMCPUnavailableStatus(config, oauthServers.has(serverName))];
           }
         }),
       ),

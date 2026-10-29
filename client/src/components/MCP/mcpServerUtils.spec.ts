@@ -1,5 +1,10 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
-import { isMCPServerReadyForAgent, shouldShowActionButton } from './mcpServerUtils';
+import {
+  getStatusColor,
+  getStatusTextKey,
+  isMCPServerReadyForAgent,
+  shouldShowActionButton,
+} from './mcpServerUtils';
 
 const status = (
   connectionState: MCPServerStatus['connectionState'],
@@ -78,5 +83,29 @@ describe('shouldShowActionButton', () => {
 it('preserves connected readiness from older replicas without configurationState', () => {
   expect(
     isMCPServerReadyForAgent({ connectionState: 'connected', requiresOAuth: false }, false, true),
+  ).toBe(true);
+});
+
+it('presents an unavailable lookup as unknown and keeps retry actionable', () => {
+  const serverStatus: MCPServerStatus = {
+    connectionState: 'error',
+    connectionStateSource: 'unavailable',
+    requiresOAuth: true,
+  };
+  expect(getStatusTextKey('server', { server: serverStatus })).toBe('com_nav_mcp_status_unknown');
+  expect(getStatusColor('server', { server: serverStatus })).toBe('bg-status-neutral');
+  expect(isMCPServerReadyForAgent(serverStatus, false)).toBe(false);
+  expect(isMCPServerReadyForAgent({ ...serverStatus, requestScoped: true }, true, true)).toBe(
+    false,
+  );
+  expect(
+    shouldShowActionButton({
+      serverName: 'server',
+      serverStatus,
+      isInitializing: false,
+      canCancel: false,
+      onCancel: jest.fn(),
+      onConfigClick: jest.fn(),
+    }),
   ).toBe(true);
 });

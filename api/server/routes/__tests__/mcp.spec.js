@@ -3449,32 +3449,39 @@ describe('MCP Routes', () => {
       expect(getServerConnectionStatus).toHaveBeenCalledTimes(2);
     });
 
-    it('preserves request-scoped metadata when an individual status check fails', async () => {
-      getMCPSetupData.mockResolvedValue({
-        mcpConfig: {
-          server1: {
-            source: 'config',
-            headers: { 'X-Message': '{{LIBRECHAT_BODY_MESSAGEID}}' },
-            customUserVars: { API_KEY: { title: 'API key' } },
-          },
+    it.each([
+      ['non-OAuth', false, {}],
+      ['OAuth', true, {}],
+      [
+        'request-scoped',
+        false,
+        {
+          source: 'config',
+          headers: { 'X-Message': '{{LIBRECHAT_BODY_MESSAGEID}}' },
+          customUserVars: { API_KEY: { title: 'API key' } },
         },
-        appConnections: new Map(),
-        userConnections: new Map(),
-        oauthServers: new Set(),
-      });
-      getServerConnectionStatus.mockRejectedValueOnce(new Error('status unavailable'));
-
-      const response = await request(app).get('/api/mcp/connection/status');
-
-      expect(response.status).toBe(200);
-      expect(response.body.connectionStatus.server1).toEqual(
-        expect.objectContaining({
+      ],
+    ])(
+      'reports %s lookup failure without inventing authorization or configuration failures',
+      async (_name, requiresOAuth, config) => {
+        getMCPSetupData.mockResolvedValue({
+          mcpConfig: { server1: config },
+          appConnections: new Map(),
+          userConnections: new Map(),
+          oauthServers: new Set(requiresOAuth ? ['server1'] : []),
+        });
+        getServerConnectionStatus.mockRejectedValueOnce(new Error('secret provider diagnostic'));
+        const response = await request(app).get('/api/mcp/connection/status');
+        expect(response.status).toBe(200);
+        expect(response.body.connectionStatus.server1).toEqual({
           connectionState: 'error',
-          requestScoped: true,
-          configurationState: 'needs_configuration',
-        }),
-      );
-    });
+          connectionStateSource: 'unavailable',
+          requiresOAuth,
+          ...(_name === 'request-scoped' && { requestScoped: true }),
+        });
+        expect(JSON.stringify(response.body)).not.toContain('secret provider diagnostic');
+      },
+    );
 
     it('should return 500 when connection status check fails', async () => {
       getMCPSetupData.mockRejectedValue(new Error('Database error'));
